@@ -236,10 +236,14 @@ def _auto_config():
         bs, nw, lr, flr = 192, min(8, n_cpu), 2e-3, 2e-4
         n_pts = 8192
         label = 'A100 40GB'
-    elif vram_mb > 0:          # T4 / L4 / V100 16-24GB
+    elif vram_gb >= 20:        # L4 24GB — n_points=8192 MUAT (terukur ~8.4GB di bs=192);
+        bs, nw, lr, flr = 192, min(8, n_cpu), 1e-3, 1e-4   # jangan clamp ke 4096 (rusak protokol)
+        n_pts = 8192
+        label = 'L4 24GB class'
+    elif vram_mb > 0:          # T4 / V100 16GB
         bs, nw, lr, flr = 128, min(2, n_cpu), 1e-3, 1e-4
         n_pts = 4096
-        label = 'T4/L4/V100 class'
+        label = 'T4/V100 16GB class'
     else:                      # CPU
         bs, nw, lr, flr = 32, 0, 1e-3, 1e-4
         n_pts = 2048
