@@ -148,8 +148,9 @@ def _ensure_dataset():
         print('[data] generate dari Raw Depth Data (~35-90 mnt; idempotent) ...')
         subprocess.run([sys.executable, '-m', 'pip', 'install', '-q',
                         'open3d', 'opencv-python-headless', 'scikit-learn', 'scipy'], check=True)
-        r = subprocess.run([sys.executable, 'generate_dataset.py'], cwd=str(REPO_DIR / '3DRegistration'))
-        assert r.returncode == 0, 'generate_dataset.py gagal'
+        rc = _run_streaming(f'{sys.executable} generate_dataset.py',
+                            cwd=REPO_DIR / '3DRegistration')   # stream progres ke sel
+        assert rc == 0, 'generate_dataset.py gagal'
         print(f'[data] cache → Drive {drive_tar.name} ...')
         tmp = str(drive_tar) + '.tmp'
         subprocess.run(['tar', '--use-compress-program', 'zstd -T0', '-cf', tmp,
@@ -220,6 +221,26 @@ def _build_splits():
 
 
 # ═══════════════════════════════ GIT ═══════════════════════════════
+def _run_streaming(cmd, cwd=None, logfile=None):
+    """Jalankan cmd (shell), STREAM stdout+stderr LIVE ke sel notebook, sekaligus simpan ke logfile.
+    (Pengganti subprocess.run+tee yang outputnya tak tampil di sel Colab.)"""
+    lf = open(logfile, 'w') if logfile else None
+    proc = subprocess.Popen(str(cmd), shell=True, executable='/bin/bash',
+                            cwd=str(cwd) if cwd else None,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    try:
+        for line in proc.stdout:
+            print(line, end='')                 # → sys.stdout (ditangkap & ditampilkan Colab)
+            if lf:
+                lf.write(line); lf.flush()
+    finally:
+        proc.wait()
+        if lf:
+            lf.close()
+    return proc.returncode
+
+
 def _git(args, timeout=600):
     try:
         r = subprocess.run(['git'] + args, cwd=str(REPO_DIR),
@@ -272,10 +293,12 @@ def run_training(cfg_id, repr_mode, loss_type, margin, seed):
     print(f'\n{"="*60}\nTRAIN {cfg_id} | repr={repr_mode} | loss={loss_type} m={margin} | seed={seed}\n{"="*60}')
     out_dir.mkdir(parents=True, exist_ok=True)
     log = out_dir / 'train_stdout.log'
-    rc = subprocess.run(f'{cmd} 2>&1 | tee "{log}"', shell=True, executable='/bin/bash').returncode
+    print(f'$ {cmd}\n')                          # transparansi: perintah persis
+    rc = _run_streaming(cmd, logfile=log)        # STREAM output train.py LIVE ke sel
     ok = perf.exists()
     if not ok:
-        print(f'  [GAGAL] {cfg_id} seed={seed}: perf.json tak terbentuk — cek {log}')
+        print(f'\n  [GAGAL] {cfg_id} seed={seed}: perf.json tak terbentuk (rc={rc}). '
+              f'Lihat traceback train.py DI ATAS (juga tersimpan di {log}).')
     else:
         try:
             p = json.loads(perf.read_text())
