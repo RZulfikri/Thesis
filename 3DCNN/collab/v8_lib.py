@@ -121,10 +121,27 @@ def setup(drive_root='/content/drive/MyDrive/PointNetPalm', mount_drive=True,
     print(f'RUNS_DIR (Drive): {RUNS_DIR}')
     print(f'ANA_DIR (git):    {ANA_DIR}')
 
+    _ensure_deps()
     _ensure_dataset()
     _autotune_gpu()
     _build_splits()
     print('[setup] selesai.')
+
+
+def _ensure_deps():
+    """Pasang dependency RUNTIME tanpa syarat (idempotent). open3d WAJIB utk raw_ply (A0)
+    yang load output.ply; scikit-learn dipakai analyze() (confusion/t-SNE). Dataset bisa
+    di-restore dari Drive tanpa lewat cabang generate → deps ini harus dipastikan terpisah."""
+    import importlib.util
+    need = [m for m, pip in (('open3d', 'open3d'), ('sklearn', 'scikit-learn'))
+            if importlib.util.find_spec(m) is None]
+    if not need:
+        print('[deps] open3d & scikit-learn sudah ada.')
+        return
+    pip_names = {'open3d': 'open3d', 'sklearn': 'scikit-learn'}
+    pkgs = ' '.join(pip_names[m] for m in need)
+    print(f'[deps] install: {pkgs} ...')
+    _run_streaming(f'{sys.executable} -m pip install -q {pkgs}')
 
 
 def _ensure_dataset():
