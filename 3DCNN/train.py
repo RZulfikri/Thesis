@@ -217,7 +217,7 @@ def _auto_config():
         # Empirical (May 18): bs=384/n_pts=12288 OOM di ball_query argsort (20 GiB
         # scratch tunggal + Siamese 2× branch saturasi 85 GB). 256/8192 ≈ 50 GB
         # peak — aman untuk no_geom dan with_geom.
-        bs, nw, lr, flr = 256, min(8, n_cpu), 2e-3, 2e-4
+        bs, nw, lr, flr = 384, min(8, n_cpu), 2e-3, 2e-4   # v8: BS fixed 384 (no_geom ~15GB); lr di-override notebook
         n_pts = 8192
         label = f'96GB class ({gpu_name}, CC={compute_capability})'
     elif is_h100 and vram_gb >= 75:
@@ -229,15 +229,15 @@ def _auto_config():
     elif vram_gb >= 75:        # A100 80GB
         # bs=512/n_pts=8192 OOM di ball_query untuk with_geom.
         # 256/8192 ≈ 70-80 GB peak, aman untuk semua variant.
-        bs, nw, lr, flr = 256, min(8, n_cpu), 2e-3, 2e-4
+        bs, nw, lr, flr = 384, min(8, n_cpu), 2e-3, 2e-4   # v8: BS fixed 384 (no_geom ~15GB); lr di-override notebook
         n_pts = 8192
         label = f'A100 80GB class ({gpu_name}, CC={compute_capability})'
     elif vram_gb >= 35:        # A100 40GB
-        bs, nw, lr, flr = 192, min(8, n_cpu), 2e-3, 2e-4
+        bs, nw, lr, flr = 384, min(8, n_cpu), 2e-3, 2e-4   # v8: BS fixed 384
         n_pts = 8192
         label = 'A100 40GB'
-    elif vram_gb >= 20:        # L4 24GB — n_points=8192 MUAT (terukur ~8.4GB di bs=192);
-        bs, nw, lr, flr = 192, min(8, n_cpu), 1e-3, 1e-4   # jangan clamp ke 4096 (rusak protokol)
+    elif vram_gb >= 20:        # L4 24GB — n_points=8192 MUAT; v8 BS fixed 384 (~15GB, no_geom)
+        bs, nw, lr, flr = 384, min(8, n_cpu), 1e-3, 1e-4   # jangan clamp ke 192/4096 (rusak protokol)
         n_pts = 8192
         label = 'L4 24GB class'
     elif vram_mb > 0:          # T4 / V100 16GB
