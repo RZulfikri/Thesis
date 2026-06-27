@@ -1,0 +1,11 @@
+__pycache__
+*.ply
+*.so
+cpp/build
+venv/
+.DS_Store
+data/
+*.zip
+dataset/
+result/
+result_frames/

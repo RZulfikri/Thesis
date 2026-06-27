@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../Open3D_TrueDepth_registration"
+		}
+	],
+	"settings": {}
+}

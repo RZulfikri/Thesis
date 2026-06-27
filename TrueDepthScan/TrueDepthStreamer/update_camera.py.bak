@@ -1,0 +1,674 @@
+
+content = r"""/*
+See the LICENSE.txt file for this sample’s licensing information.
+
+Abstract:
+Manages the camera session and data processing.
+*/
+
+import Foundation
+import AVFoundation
+import CoreVideo
+import UIKit
+import Accelerate
+
+class CameraManager: NSObject, ObservableObject, AVCaptureDataOutputSynchronizerDelegate {
+    
+    enum SessionSetupResult {
+        case success
+        case notAuthorized
+        case configurationFailed
+    }
+    
+    @Published var permissionGranted = false
+    @Published var sessionRunning = false
+    @Published var isJetEnabled = false {
+        didSet {
+            // Update rendering state if needed
+            dataOutputQueue.async {
+                self.renderingEnabled = true
+            }
+        }
+    }
+    @Published var isSmoothingEnabled = false {
+        didSet {
+            sessionQueue.async {
+                self.depthDataOutput.isFilteringEnabled = self.isSmoothingEnabled
+            }
+        }
+    }
+    @Published var mixFactor: Float = 0.5 {
+        didSet {
+            dataOutputQueue.async {
+                self.videoDepthMixer.mixFactor = self.mixFactor
+            }
+        }
+    }
+    
+    // Outputs for UI
+    @Published var previewPixelBuffer: CVPixelBuffer?
+    @Published var capturedDepthData: AVDepthData?
+    @Published var capturedVideoTexture: CVPixelBuffer?
+    @Published var plyFileURL: URL?
+    @Published var isScanning = false
+    @Published var isCountingDown = false
+    @Published var countdownValue = 0
+    
+    @Published var touchDepth: String = ""
+    @Published var thermalState: ProcessInfo.ThermalState = .nominal
+    @Published var alertMessage: AlertMessage?
+
+    struct AlertMessage: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+    }
+    
+    private let session = AVCaptureSession()
+    private var isSessionRunning = false
+    private let sessionQueue = DispatchQueue(label: "session queue", attributes: [], autoreleaseFrequency: .workItem)
+    private var setupResult: SessionSetupResult = .success
+    private var videoDeviceInput: AVCaptureDeviceInput!
+    
+    private let dataOutputQueue = DispatchQueue(label: "video data queue", qos: .userInitiated, attributes: [], autoreleaseFrequency: .workItem)
+    private let videoDataOutput = AVCaptureVideoDataOutput()
+    private let depthDataOutput = AVCaptureDepthDataOutput()
+    private var outputSynchronizer: AVCaptureDataOutputSynchronizer?
+    
+    private let videoDepthMixer = VideoMixer()
+    private let videoDepthConverter = DepthToJETConverter()
+    
+    private var renderingEnabled = true
+    private var shouldCaptureNextFrame = false
+    
+    private let videoDeviceDiscoverySession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInTrueDepthCamera],
+                                                                               mediaType: .video,
+                                                                               position: .front)
+    
+    override init() {
+        super.init()
+        
+        // Check video authorization status
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            break
+        case .notDetermined:
+            sessionQueue.suspend()
+            AVCaptureDevice.requestAccess(for: .video, completionHandler: { granted in
+                if !granted {
+                    self.setupResult = .notAuthorized
+                }
+                self.sessionQueue.resume()
+            })
+        default:
+            setupResult = .notAuthorized
+        }
+        
+        sessionQueue.async {
+            self.configureSession()
+        }
+        
+        addObservers()
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    func startSession() {
+        sessionQueue.async {
+            switch self.setupResult {
+            case .success:
+                self.addObservers()
+                self.session.startRunning()
+                self.isSessionRunning = self.session.isRunning
+                DispatchQueue.main.async {
+                    self.sessionRunning = self.isSessionRunning
+                    self.permissionGranted = true
+                }
+            case .notAuthorized:
+                DispatchQueue.main.async {
+                    self.permissionGranted = false
+                    self.alertMessage = AlertMessage(title: "TrueDepthStreamer",
+                                                     message: "TrueDepthStreamer doesn't have permission to use the camera, please change privacy settings")
+                }
+            case .configurationFailed:
+                DispatchQueue.main.async {
+                    self.alertMessage = AlertMessage(title: "TrueDepthStreamer",
+                                                     message: "Unable to capture media")
+                }
+            }
+        }
+    }
+    
+    func stopSession() {
+        sessionQueue.async {
+            if self.setupResult == .success {
+                self.session.stopRunning()
+                self.isSessionRunning = self.session.isRunning
+                DispatchQueue.main.async {
+                    self.sessionRunning = self.isSessionRunning
+                }
+            }
+        }
+    }
+    
+    // MARK: - Scanning Logic
+    
+    func startCountdown() {
+        isCountingDown = true
+        countdownValue = 3
+        
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+            if self.countdownValue > 1 {
+                self.countdownValue -= 1
+            } else {
+                timer.invalidate()
+                self.isCountingDown = false
+                self.isScanning = true
+            }
+        }
+    }
+    
+    func stopScanning() {
+        if isScanning {
+            // Trigger capture on next frame
+            shouldCaptureNextFrame = true
+            isScanning = false
+        }
+    }
+    
+    func resetScan() {
+        capturedDepthData = nil
+        capturedVideoTexture = nil
+        plyFileURL = nil
+    }
+    
+    // MARK: - Session Management
+    
+    private func configureSession() {
+        if setupResult != .success {
+            return
+        }
+        
+        let defaultVideoDevice: AVCaptureDevice? = videoDeviceDiscoverySession.devices.first
+        
+        guard let videoDevice = defaultVideoDevice else {
+            print("Could not find any video device")
+            setupResult = .configurationFailed
+            return
+        }
+        
+        do {
+            videoDeviceInput = try AVCaptureDeviceInput(device: videoDevice)
+        } catch {
+            print("Could not create video device input: \(error)")
+            setupResult = .configurationFailed
+            return
+        }
+        
+        session.beginConfiguration()
+        session.sessionPreset = .vga640x480
+        
+        guard session.canAddInput(videoDeviceInput) else {
+            print("Could not add video device input to the session")
+            setupResult = .configurationFailed
+            session.commitConfiguration()
+            return
+        }
+        session.addInput(videoDeviceInput)
+        
+        if session.canAddOutput(videoDataOutput) {
+            session.addOutput(videoDataOutput)
+            videoDataOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+        } else {
+            print("Could not add video data output to the session")
+            setupResult = .configurationFailed
+            session.commitConfiguration()
+            return
+        }
+        
+        if session.canAddOutput(depthDataOutput) {
+            session.addOutput(depthDataOutput)
+            depthDataOutput.isFilteringEnabled = false
+            if let connection = depthDataOutput.connection(with: .depthData) {
+                connection.isEnabled = true
+            } else {
+                print("No AVCaptureConnection")
+            }
+        } else {
+            print("Could not add depth data output to the session")
+            setupResult = .configurationFailed
+            session.commitConfiguration()
+            return
+        }
+        
+        // Search for highest resolution with half-point depth values
+        let depthFormats = videoDevice.activeFormat.supportedDepthDataFormats
+        let filtered = depthFormats.filter({
+            CMFormatDescriptionGetMediaSubType($0.formatDescription) == kCVPixelFormatType_DepthFloat16
+        })
+        let selectedFormat = filtered.max(by: {
+            first, second in CMVideoFormatDescriptionGetDimensions(first.formatDescription).width < CMVideoFormatDescriptionGetDimensions(second.formatDescription).width
+        })
+        
+        do {
+            try videoDevice.lockForConfiguration()
+            videoDevice.activeDepthDataFormat = selectedFormat
+            videoDevice.unlockForConfiguration()
+        } catch {
+            print("Could not lock device for configuration: \(error)")
+            setupResult = .configurationFailed
+            session.commitConfiguration()
+            return
+        }
+        
+        outputSynchronizer = AVCaptureDataOutputSynchronizer(dataOutputs: [videoDataOutput, depthDataOutput])
+        outputSynchronizer!.setDelegate(self, queue: dataOutputQueue)
+        session.commitConfiguration()
+    }
+    
+    // MARK: - AVCaptureDataOutputSynchronizerDelegate
+    
+    func dataOutputSynchronizer(_ synchronizer: AVCaptureDataOutputSynchronizer,
+                                didOutput synchronizedDataCollection: AVCaptureSynchronizedDataCollection) {
+        
+        if !renderingEnabled {
+            return
+        }
+        
+        guard let syncedDepthData = synchronizedDataCollection.synchronizedData(for: depthDataOutput) as? AVCaptureSynchronizedDepthData,
+              let syncedVideoData = synchronizedDataCollection.synchronizedData(for: videoDataOutput) as? AVCaptureSynchronizedSampleBufferData else {
+            return
+        }
+        
+        if syncedDepthData.depthDataWasDropped || syncedVideoData.sampleBufferWasDropped {
+            return
+        }
+        
+        let depthData = syncedDepthData.depthData
+        let depthPixelBuffer = depthData.depthDataMap
+        let sampleBuffer = syncedVideoData.sampleBuffer
+        
+        guard let videoPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
+            return
+        }
+        
+        // Handle Capture
+        if shouldCaptureNextFrame {
+            shouldCaptureNextFrame = false
+            
+            // Deep copy the pixel buffers for storage
+            var videoCopy: CVPixelBuffer?
+            var depthCopy: CVPixelBuffer?
+            
+            // Create new buffers
+            CVPixelBufferCreate(kCFAllocatorDefault, CVPixelBufferGetWidth(videoPixelBuffer), CVPixelBufferGetHeight(videoPixelBuffer), CVPixelBufferGetPixelFormatType(videoPixelBuffer), nil, &videoCopy)
+            CVPixelBufferCreate(kCFAllocatorDefault, CVPixelBufferGetWidth(depthPixelBuffer), CVPixelBufferGetHeight(depthPixelBuffer), CVPixelBufferGetPixelFormatType(depthPixelBuffer), nil, &depthCopy)
+            
+            if let videoCopy = videoCopy, let depthCopy = depthCopy {
+                // Copy Video Data
+                CVPixelBufferLockBaseAddress(videoPixelBuffer, .readOnly)
+                CVPixelBufferLockBaseAddress(videoCopy, [])
+                if let src = CVPixelBufferGetBaseAddress(videoPixelBuffer), let dst = CVPixelBufferGetBaseAddress(videoCopy) {
+                    memcpy(dst, src, CVPixelBufferGetDataSize(videoPixelBuffer))
+                }
+                CVPixelBufferUnlockBaseAddress(videoCopy, [])
+                CVPixelBufferUnlockBaseAddress(videoPixelBuffer, .readOnly)
+                
+                // Copy Depth Data
+                CVPixelBufferLockBaseAddress(depthPixelBuffer, .readOnly)
+                CVPixelBufferLockBaseAddress(depthCopy, [])
+                if let src = CVPixelBufferGetBaseAddress(depthPixelBuffer), let dst = CVPixelBufferGetBaseAddress(depthCopy) {
+                    memcpy(dst, src, CVPixelBufferGetDataSize(depthPixelBuffer))
+                }
+                CVPixelBufferUnlockBaseAddress(depthCopy, [])
+                CVPixelBufferUnlockBaseAddress(depthPixelBuffer, .readOnly)
+                
+                // Create new AVDepthData from the copied buffer
+                // We need to preserve calibration data
+                var depthDataCopy: AVDepthData
+                do {
+                    // Force unwrapping because we know we are providing a dictionary if we are here (depthData is valid)
+                    // But actually, dictionaryRepresentation(forAuxiliaryDataType:) returns [AnyHashable : Any]?
+                    // We must unwrap it safely or provide a default empty dictionary? No, AVDepthData requires a valid dictionary.
+                    // If depthData exists, it should have a representation.
+                    
+                    if let dict = depthData.dictionaryRepresentation(forAuxiliaryDataType: nil) {
+                        depthDataCopy = try AVDepthData(fromDictionaryRepresentation: dict)
+                        // Replacing the depth map with our copied buffer
+                        depthDataCopy = try depthDataCopy.replacingDepthDataMap(with: depthCopy)
+                    } else {
+                        print("Failed to get dictionary representation from depth data")
+                        return
+                    }
+                } catch {
+                    print("Failed to create depth data copy: \(error)")
+                    return
+                }
+
+                DispatchQueue.global(qos: .userInitiated).async {
+                    if let url = self.saveToPLY(depthData: depthDataCopy, texture: videoCopy) {
+                        DispatchQueue.main.async {
+                            self.capturedDepthData = depthDataCopy
+                            self.capturedVideoTexture = videoCopy
+                            self.plyFileURL = url
+                        }
+                    }
+                }
+            }
+        }
+        
+        if isJetEnabled {
+            if !videoDepthConverter.isPrepared {
+                var depthFormatDescription: CMFormatDescription?
+                CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
+                                                             imageBuffer: depthPixelBuffer,
+                                                             formatDescriptionOut: &depthFormatDescription)
+                videoDepthConverter.prepare(with: depthFormatDescription!, outputRetainedBufferCountHint: 2)
+            }
+            
+            guard let jetPixelBuffer = videoDepthConverter.render(pixelBuffer: depthPixelBuffer) else {
+                return
+            }
+            
+            if !videoDepthMixer.isPrepared {
+                videoDepthMixer.prepare(with: formatDescription, outputRetainedBufferCountHint: 3)
+            }
+            
+            guard let mixedBuffer = videoDepthMixer.mix(videoPixelBuffer: videoPixelBuffer, depthPixelBuffer: jetPixelBuffer) else {
+                return
+            }
+            
+            DispatchQueue.main.async {
+                self.previewPixelBuffer = mixedBuffer
+            }
+            
+            processDepthAtTouch(depthFrame: depthPixelBuffer, videoFrame: videoPixelBuffer)
+        }
+    }
+    
+    // MARK: - PLY Export
+    
+    func saveToPLY(depthData: AVDepthData, texture: CVPixelBuffer) -> URL? {
+        let width = CVPixelBufferGetWidth(depthData.depthDataMap)
+        let height = CVPixelBufferGetHeight(depthData.depthDataMap)
+        
+        // 1. Lock Buffers
+        CVPixelBufferLockBaseAddress(depthData.depthDataMap, .readOnly)
+        CVPixelBufferLockBaseAddress(texture, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(depthData.depthDataMap, .readOnly)
+            CVPixelBufferUnlockBaseAddress(texture, .readOnly)
+        }
+        
+        guard let depthBase = CVPixelBufferGetBaseAddress(depthData.depthDataMap),
+              let textureBase = CVPixelBufferGetBaseAddress(texture) else { return nil }
+        
+        let depthBytesPerRow = CVPixelBufferGetBytesPerRow(depthData.depthDataMap)
+        let textureBytesPerRow = CVPixelBufferGetBytesPerRow(texture)
+        
+        // 2. Intrinsics
+        let intrinsics = depthData.cameraCalibrationData?.intrinsicMatrix ?? matrix_float3x3(columns: (simd_float3(1,0,0), simd_float3(0,1,0), simd_float3(0,0,1)))
+        let fx = intrinsics.columns.0.x
+        let fy = intrinsics.columns.1.y
+        let cx = intrinsics.columns.2.x
+        let cy = intrinsics.columns.2.y
+        
+        // 3. Collect Points
+        var vertices: [String] = []
+        var faces: [String] = []
+        
+        // Use an index map to track which pixels became valid vertices
+        // Key: y * width + x, Value: Vertex Index
+        var indexMap: [Int: Int] = [:]
+        var vertexCount = 0
+        
+        // Assume Float16 depth
+        // We iterate over the depth map using a stride of 1 for max detail
+        
+        for y in 0..<height {
+            let depthRow = depthBase.advanced(by: y * depthBytesPerRow).assumingMemoryBound(to: Float16.self)
+            
+            // Map texture coordinates
+            let textureY = Int(Float(y) / Float(height) * Float(CVPixelBufferGetHeight(texture)))
+            let textureRow = textureBase.advanced(by: textureY * textureBytesPerRow).assumingMemoryBound(to: UInt8.self)
+            
+            for x in 0..<width {
+                let depthVal16 = depthRow[x]
+                var depthVal32 = Float(0.0)
+                
+                // Convert Float16 to Float32
+                var src = depthVal16
+                
+                withUnsafePointer(to: &src) { srcPtr in
+                    var srcBuffer = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: srcPtr), height: 1, width: 1, rowBytes: 2)
+                    var dstBuffer = vImage_Buffer(data: &depthVal32, height: 1, width: 1, rowBytes: 4)
+                    vImageConvert_Planar16FtoPlanarF(&srcBuffer, &dstBuffer, 0)
+                }
+                
+                // Valid depth check (e.g. non-zero, not NaN)
+                if depthVal32 > 0 && !depthVal32.isNaN {
+                    let Z = depthVal32
+                    
+                    // Filter out points that are too close or too far (e.g. outside 1 meter)
+                    // Tighter filter: 10cm to 35cm to isolate hand
+                    let depthCM_raw = Z * 100.0
+                    if depthCM_raw < 10.0 || depthCM_raw > 35.0 {
+                        continue
+                    }
+                    
+                    // Unproject
+                    let X_cam = (Float(x) - cx) * Z / fx
+                    let Y_cam = (Float(y) - cy) * Z / fy
+                    let Z_cam = Z
+                    
+                    // Scale to CM and transform coordinate system
+                    let scaleFactor: Float = 100.0
+                    
+                    // Flip Y and Z to match standard 3D viewer orientation (Y up)
+                    let X_final = X_cam * scaleFactor
+                    let Y_final = -Y_cam * scaleFactor
+                    let Z_final = -Z_cam * scaleFactor
+                    
+                    // Color (BGRA)
+                    let textureX = Int(Float(x) / Float(width) * Float(CVPixelBufferGetWidth(texture)))
+                    let b = textureRow[textureX * 4 + 0]
+                    let g = textureRow[textureX * 4 + 1]
+                    let r = textureRow[textureX * 4 + 2]
+                    
+                    // PLY Line: x y z r g b
+                    vertices.append("\(X_final) \(Y_final) \(Z_final) \(r) \(g) \(b)")
+                    
+                    // Track index
+                    indexMap[y * width + x] = vertexCount
+                    vertexCount += 1
+                }
+            }
+        }
+        
+        // 4. Generate Faces (Triangle Mesh)
+        for y in 0..<(height - 1) {
+            for x in 0..<(width - 1) {
+                let tl = y * width + x
+                let tr = y * width + (x + 1)
+                let bl = (y + 1) * width + x
+                let br = (y + 1) * width + (x + 1)
+                
+                if let idxTL = indexMap[tl], let idxTR = indexMap[tr],
+                   let idxBL = indexMap[bl], let idxBR = indexMap[br] {
+                    
+                    // Triangle 1
+                    faces.append("3 \(idxTL) \(idxBL) \(idxTR)")
+                    
+                    // Triangle 2
+                    faces.append("3 \(idxTR) \(idxBL) \(idxBR)")
+                }
+            }
+        }
+        
+        // 5. Write Header & Data
+        let header = \"\"\"
+        ply
+        format ascii 1.0
+        element vertex \(vertices.count)
+        property float x
+        property float y
+        property float z
+        property uchar red
+        property uchar green
+        property uchar blue
+        element face \(faces.count)
+        property list uchar int vertex_indices
+        end_header
+        \"\"\"
+        
+        let fileContent = header + \"\\n\" + vertices.joined(separator: \"\\n\") + \"\\n\" + faces.joined(separator: \"\\n\")
+        
+        let fileName = \"scan_\\(Date().timeIntervalSince1970).ply\"
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        
+        do {
+            try fileContent.write(to: fileURL, atomically: true, encoding: .ascii)
+            print(\"Saved PLY to \\(fileURL)\")
+            return fileURL
+        } catch {
+            print(\"Failed to save PLY: \\(error)\")
+            return nil
+        }
+    }
+    
+    // MARK: - Focus and Exposure
+    
+    func focusAndExpose(at texturePoint: CGPoint, textureWidth: Int, textureHeight: Int) {
+        let textureRect = CGRect(origin: texturePoint, size: .zero)
+        let deviceRect = videoDataOutput.metadataOutputRectConverted(fromOutputRect: textureRect)
+        focus(with: .autoFocus, exposureMode: .autoExpose, at: deviceRect.origin, monitorSubjectAreaChange: true)
+    }
+    
+    private func focus(with focusMode: AVCaptureDevice.FocusMode,
+                       exposureMode: AVCaptureDevice.ExposureMode,
+                       at devicePoint: CGPoint,
+                       monitorSubjectAreaChange: Bool) {
+        sessionQueue.async {
+            let videoDevice = self.videoDeviceInput.device
+            
+            do {
+                try videoDevice.lockForConfiguration()
+                if videoDevice.isFocusPointOfInterestSupported && videoDevice.isFocusModeSupported(focusMode) {
+                    videoDevice.focusPointOfInterest = devicePoint
+                    videoDevice.focusMode = focusMode
+                }
+                
+                if videoDevice.isExposurePointOfInterestSupported && videoDevice.isExposureModeSupported(exposureMode) {
+                    videoDevice.exposurePointOfInterest = devicePoint
+                    videoDevice.exposureMode = exposureMode
+                }
+                
+                videoDevice.isSubjectAreaChangeMonitoringEnabled = monitorSubjectAreaChange
+                videoDevice.unlockForConfiguration()
+            } catch {
+                print("Could not lock device for configuration: \(error)")
+            }
+        }
+    }
+    
+    // MARK: - Depth Measurement
+    
+    // We need to implement the touch depth logic inside the delegate loop or store the latest frame.
+    // Storing the latest frame might be expensive or thread-unsafe if not careful.
+    // Let's implement the `touchDetected` state here.
+    
+    private var touchDetected = false
+    private var touchCoordinates: CGPoint = .zero
+    var textureTransformResolver: ((CGPoint) -> CGPoint?)? // To be set by the view
+    
+    func setTouchCoordinates(_ point: CGPoint, detected: Bool) {
+        dataOutputQueue.async {
+            self.touchCoordinates = point
+            self.touchDetected = detected
+        }
+        if !detected {
+            DispatchQueue.main.async {
+                self.touchDepth = ""
+            }
+        }
+    }
+    
+    // Call this from dataOutputSynchronizer if isJetEnabled
+    private func processDepthAtTouch(depthFrame: CVPixelBuffer, videoFrame: CVPixelBuffer) {
+        // This is running on dataOutputQueue, so safe to access touchDetected/Coordinates
+        guard touchDetected, let resolve = textureTransformResolver, let texturePoint = resolve(touchCoordinates) else {
+             return
+        }
+        
+        let scale = CGFloat(CVPixelBufferGetWidth(depthFrame)) / CGFloat(CVPixelBufferGetWidth(videoFrame))
+        let depthPoint = CGPoint(x: CGFloat(CVPixelBufferGetWidth(depthFrame)) - 1.0 - texturePoint.x * scale, y: texturePoint.y * scale)
+        
+        CVPixelBufferLockBaseAddress(depthFrame, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthFrame, .readOnly) }
+        
+        guard let baseAddress = CVPixelBufferGetBaseAddress(depthFrame) else { return }
+        let rowData = baseAddress + Int(depthPoint.y) * CVPixelBufferGetBytesPerRow(depthFrame)
+        var f16Pixel = rowData.assumingMemoryBound(to: UInt16.self)[Int(depthPoint.x)]
+        var f32Pixel = Float(0.0)
+        
+        withUnsafeMutablePointer(to: &f16Pixel) { f16RawPointer in
+            withUnsafeMutablePointer(to: &f32Pixel) { f32RawPointer in
+                var src = vImage_Buffer(data: f16RawPointer, height: 1, width: 1, rowBytes: 2)
+                var dst = vImage_Buffer(data: f32RawPointer, height: 1, width: 1, rowBytes: 4)
+                vImageConvert_Planar16FtoPlanarF(&src, &dst, 0)
+            }
+        }
+        
+        let depthString = String(format: "%.2f cm", f32Pixel * 100)
+        DispatchQueue.main.async {
+            self.touchDepth = depthString
+        }
+    }
+
+    // MARK: - Notifications
+    
+    private func addObservers() {
+        NotificationCenter.default.addObserver(self, selector: #selector(thermalStateChanged),
+                                               name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionRuntimeError),
+                                               name: NSNotification.Name.AVCaptureSessionRuntimeError, object: session)
+        NotificationCenter.default.addObserver(self, selector: #selector(subjectAreaDidChange),
+                                               name: NSNotification.Name.AVCaptureDeviceSubjectAreaDidChange,
+                                               object: videoDeviceInput?.device)
+    }
+    
+    @objc func thermalStateChanged(notification: NSNotification) {
+        if let processInfo = notification.object as? ProcessInfo {
+            DispatchQueue.main.async {
+                self.thermalState = processInfo.thermalState
+            }
+        }
+    }
+    
+    @objc func sessionRuntimeError(notification: NSNotification) {
+        guard let errorValue = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError else { return }
+        let error = AVError(_nsError: errorValue)
+        print("Capture session runtime error: \(error)")
+        
+        if error.code == .mediaServicesWereReset {
+            sessionQueue.async {
+                if self.isSessionRunning {
+                    self.session.startRunning()
+                    self.isSessionRunning = self.session.isRunning
+                }
+            }
+        }
+    }
+    
+    @objc func subjectAreaDidChange(notification: NSNotification) {
+        let devicePoint = CGPoint(x: 0.5, y: 0.5)
+        focus(with: .continuousAutoFocus, exposureMode: .continuousAutoExposure, at: devicePoint, monitorSubjectAreaChange: false)
+    }
+}
+"""
+
+with open("CameraManager.swift", "w") as f:
+    f.write(content)

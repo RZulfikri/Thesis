@@ -1,0 +1,26 @@
+{
+  "test_eer": {
+    "n_seeds": 10,
+    "metric": "eer",
+    "with_geom_mean": 0.425,
+    "with_geom_std": 0.2263846284534354,
+    "no_geom_mean": 0.04999999999999999,
+    "no_geom_std": 0.0,
+    "diff_mean": 0.37499999999999994,
+    "diff_std": 0.2263846284534354,
+    "wilcoxon_stat": 0.0,
+    "wilcoxon_p": 0.001953125
+  },
+  "holdout_eer": {
+    "n_seeds": 10,
+    "metric": "eer",
+    "with_geom_mean": 0.375,
+    "with_geom_std": 0.10430546308621437,
+    "no_geom_mean": 0.03499999999999999,
+    "no_geom_std": 0.026585524697789773,
+    "diff_mean": 0.34,
+    "diff_std": 0.107496769977314,
+    "wilcoxon_stat": 0.0,
+    "wilcoxon_p": 0.001953125
+  }
+}

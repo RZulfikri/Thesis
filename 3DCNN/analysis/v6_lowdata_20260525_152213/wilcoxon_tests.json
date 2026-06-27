@@ -1,0 +1,26 @@
+{
+  "test_eer": {
+    "n_seeds": 10,
+    "metric": "eer",
+    "arcface_mean": 0.059999999999999984,
+    "arcface_std": 0.03162277660168378,
+    "standard_mean": 0.06499999999999999,
+    "standard_std": 0.047434164902525694,
+    "diff_mean": -0.005000000000000002,
+    "diff_std": 0.059860949986893223,
+    "wilcoxon_stat": 1.0,
+    "wilcoxon_p": 1.0
+  },
+  "holdout_eer": {
+    "n_seeds": 10,
+    "metric": "eer",
+    "arcface_mean": 0.014999999999999996,
+    "arcface_std": 0.012297746456210361,
+    "standard_mean": 0.023333333333333327,
+    "standard_std": 0.02744242007828548,
+    "diff_mean": -0.008333333333333331,
+    "diff_std": 0.032631500345752025,
+    "wilcoxon_stat": 14.0,
+    "wilcoxon_p": 0.6328125
+  }
+}

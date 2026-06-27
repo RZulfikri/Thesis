@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+
+# Claude Code internal worktrees
+**/.claude/worktrees/
+
+# Large binary outputs (visualisasi saja, bukan source)
+StreamTrueDepth/*.ply
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Xcode derived data
+xcuserdata/
+DerivedData/
+*.xcuserstate
+
+3DRegistration/raw_staging/*
+3DRegistration/result_frames_v720/*
+
+# Handover build artifact (download-only, regenerate from presentations/)
+/handover_claude_design.zip
+
+# Dataset TIDAK lagi disimpan di git (repo ramping — lihat docs/DATA_RELEASE_WORKFLOW.md).
+# Per versi data dikemas (pack_dataset_release.py) → di-upload sbg aset GitHub Release
+# (tag data-vN) → Colab mengunduh+extract via release_assets.pull_dataset (BUKAN clone).
+# Mencakup output.ply / geometry.json / cnn_input*.npy / align_*.npy.
+3DCNN/dataset/**
+!3DCNN/dataset/README.md
+
+# Workdir unduhan Release (part tarball ~2GB) — jangan pernah masuk git
+_release_dl/
+**/_release_dl/
+
+# Repo ramping (lihat README): dataset diregenerasi dari "Raw Depth Data" via
+# generate_dataset.py; checkpoint & hasil eval = output training (tidak di git).
+3DCNN/runs/
+3DCNN/runs_v4/
+3DCNN/eval_results/
+3DCNN/eval_results_v4/
+_raw_staging/
