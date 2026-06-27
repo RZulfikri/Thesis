@@ -54,10 +54,10 @@ ALL_SEEDS = [0, 42, 123, 2024, 31337]
 ARC_VARIANT = 'true'
 ARC_SCALE   = 30.0
 N_POINTS    = 8192
-BATCH_SIZE  = 384            # FIXED lintas semua run/GPU (comparable). ~15GB di L4 24GB (no_geom, ~40MB/sample). Tanpa probe GPU.
+BATCH_SIZE  = 768            # FIXED lintas semua run/GPU (comparable). ~16.5GB di L4 (mem≈2.7+0.018·bs). Tanpa probe GPU.
 FRAME_MODE  = 'all'
 EPOCHS, FINETUNE_EPOCHS = 120, 30
-LR, FT_LR   = 1e-3, 1e-4
+LR, FT_LR   = 2e-3, 2e-4    # di-scale utk batch besar (bs=768) — cegah under-train ~12 langkah/epoch
 N_LIST, M_LIST = [1, 3, 5, 10], [1, 3, 5, 10]
 N_BEST, M_BEST = 5, 5
 
