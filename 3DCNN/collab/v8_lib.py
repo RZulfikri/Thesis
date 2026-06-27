@@ -54,6 +54,7 @@ ALL_SEEDS = [0, 42, 123, 2024, 31337]
 ARC_VARIANT = 'true'
 ARC_SCALE   = 30.0
 N_POINTS    = 8192
+BATCH_SIZE  = 128            # FIXED lintas semua run/GPU (comparable + muat L4 24GB ~5.6GB). Tanpa probe GPU.
 FRAME_MODE  = 'all'
 EPOCHS, FINETUNE_EPOCHS = 120, 30
 LR, FT_LR   = 1e-3, 1e-4
@@ -123,7 +124,7 @@ def setup(drive_root='/content/drive/MyDrive/PointNetPalm', mount_drive=True,
 
     _ensure_deps()
     _ensure_dataset()
-    _autotune_gpu()
+    _detect_runtime()
     _build_splits()
     print('[setup] selesai.')
 
@@ -178,14 +179,18 @@ def _ensure_dataset():
     print(f'[data] siap: {nply()} frame')
 
 
-def _autotune_gpu():
-    """Probe batch size aman (cap 192) + deteksi AMP. Set global BS/AMP_MODE/NUM_WORKERS/REPEAT."""
+def _detect_runtime():
+    """Tentukan BS/AMP/workers/REPEAT TANPA meng-alokasi GPU di kernel notebook.
+    (Probe in-kernel sebelumnya menyandera VRAM → train.py subprocess OOM di L4.)
+    BS dibuat KONSTAN (BATCH_SIZE) lintas semua run/GPU → faktorial comparable + muat di L4 24GB."""
     global BS, AMP_MODE, NUM_WORKERS, REPEAT
-    import torch, gc
-    TARGET_FRAC, MAX_BS = 0.75, 192
-    cc = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 0
-    AMP_MODE = 'bf16' if cc >= 8 else 'fp16'
-    NUM_WORKERS = 8
+    import torch
+    cc = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 0  # query, bukan alokasi
+    AMP_MODE = 'bf16' if cc >= 8 else ('fp16' if cc > 0 else 'none')
+    try:
+        NUM_WORKERS = min(8, os.cpu_count() or 4)
+    except Exception:
+        NUM_WORKERS = 4
     try:
         out = subprocess.check_output(
             ['nvidia-smi', '--query-gpu=memory.total,name', '--format=csv,noheader,nounits'], text=True)
@@ -193,40 +198,10 @@ def _autotune_gpu():
         vram_gb = int(vram_str) / 1024
     except Exception:
         vram_gb, gpu_name = 0.0, 'Unknown'
-    target = vram_gb * TARGET_FRAC
-    print(f'GPU: {gpu_name} ({vram_gb:.1f} GB) | target={target:.1f} GB | AMP={AMP_MODE}')
-
-    if not torch.cuda.is_available():
-        BS = 32
-    else:
-        from models.siamese import SiamesePalmNet
-        amp_dt = torch.bfloat16 if AMP_MODE == 'bf16' else torch.float16
-
-        def _try(bs):
-            torch.cuda.empty_cache(); gc.collect(); torch.cuda.reset_peak_memory_stats()
-            try:
-                m = SiamesePalmNet(geom_dim=13, use_geom=False, use_aux_loss=False,
-                                   n_subjects=11, siamese_mode='concat').to(DEVICE)
-                m.train(); opt = torch.optim.Adam(m.parameters(), lr=1e-3)
-                pts = torch.randn(bs, N_POINTS, 6, device=DEVICE)
-                geom = torch.randn(bs, 13, device=DEVICE)
-                with torch.amp.autocast('cuda', dtype=amp_dt):
-                    loss = m.encode(pts, geom).sum()
-                loss.backward(); opt.step(); torch.cuda.synchronize()
-                peak = torch.cuda.max_memory_allocated() / (1024 ** 3)
-                del m, opt, pts, geom, loss; torch.cuda.empty_cache(); gc.collect()
-                return peak
-            except (torch.cuda.OutOfMemoryError, RuntimeError):
-                torch.cuda.empty_cache(); gc.collect(); return float('inf')
-        best, bs = 32, 32
-        while True:
-            peak = _try(bs)
-            if peak == float('inf') or peak >= target * 0.95:
-                break
-            best = bs; bs *= 2
-        BS = min(max(32, int(best * 0.9)), MAX_BS)
+    BS = BATCH_SIZE                                  # FIXED (tak ada probe GPU)
     REPEAT = max(4, -(-min(BS, 512) * 4 // 88))
-    print(f'AUTO-TUNE: BS={BS} REPEAT={REPEAT} N_POINTS={N_POINTS} AMP={AMP_MODE}')
+    print(f'GPU: {gpu_name} ({vram_gb:.1f} GB) | AMP={AMP_MODE} | BS(fixed)={BS} | '
+          f'workers={NUM_WORKERS} | REPEAT={REPEAT} | N_POINTS={N_POINTS}')
 
 
 def _build_splits():
@@ -295,6 +270,7 @@ def run_training(cfg_id, repr_mode, loss_type, margin, seed):
         return True
     amp_flag = f'--amp {AMP_MODE}' if AMP_MODE != 'none' else ''
     cmd = (
+        f'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True '   # anti-fragmentasi VRAM (saran pesan OOM)
         f'{sys.executable} {PROJECT_ROOT / "train.py"} '
         f'--data_dir {DATA_DIR} --output_dir {out_dir} --seed {seed} '
         f'--fixed_split --frames-per-session 1 --frame-mode {FRAME_MODE} '
