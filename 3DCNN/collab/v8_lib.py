@@ -54,10 +54,10 @@ ALL_SEEDS = [0, 42, 123, 2024, 31337]
 ARC_VARIANT = 'true'
 ARC_SCALE   = 30.0
 N_POINTS    = 8192
-BATCH_SIZE  = 768            # FIXED lintas semua run/GPU (comparable). ~16.5GB di L4 (mem≈2.7+0.018·bs). Tanpa probe GPU.
+BATCH_SIZE  = 1536           # AGRESIF (GPU 95GB): ~30GB (mem≈2.7+0.018·bs). FIXED → SEMUA unit WAJIB di GPU >=80GB. Tanpa probe GPU.
 FRAME_MODE  = 'all'
 EPOCHS, FINETUNE_EPOCHS = 120, 30
-LR, FT_LR   = 2e-3, 2e-4    # di-scale utk batch besar (bs=768) — cegah under-train ~12 langkah/epoch
+LR, FT_LR   = 3e-3, 3e-4    # di-scale utk bs=1536 (agresif, GPU 95GB). Pantau ~5 epoch: bila NaN/naik → 2.5e-3
 N_LIST, M_LIST = [1, 3, 5, 10], [1, 3, 5, 10]
 N_BEST, M_BEST = 5, 5
 
