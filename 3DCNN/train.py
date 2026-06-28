@@ -217,19 +217,19 @@ def _auto_config():
         # Empirical (May 18): bs=384/n_pts=12288 OOM di ball_query argsort (20 GiB
         # scratch tunggal + Siamese 2× branch saturasi 85 GB). 256/8192 ≈ 50 GB
         # peak — aman untuk no_geom dan with_geom.
-        bs, nw, lr, flr = 2560, min(8, n_cpu), 2e-3, 2e-4   # v8 MAX-UTIL: BS 2560 (GPU 95GB ~65-70GB); lr di-override notebook
+        bs, nw, lr, flr = 3072, min(8, n_cpu), 2e-3, 2e-4   # v8 MAX-UTIL: BS 3072 (GPU 95GB ~80GB); lr di-override notebook
         n_pts = 8192
         label = f'96GB class ({gpu_name}, CC={compute_capability})'
     elif is_h100 and vram_gb >= 75:
         # H100 80GB — compute capability 9.0, lebih kencang dari A100
         # Bisa lebih agresif: naikkan bs 50% vs A100 80GB
-        bs, nw, lr, flr = 2560, min(8, n_cpu), 2e-3, 2e-4   # v8 MAX-UTIL: BS 2560
+        bs, nw, lr, flr = 3072, min(8, n_cpu), 2e-3, 2e-4   # v8 MAX-UTIL: BS 3072
         n_pts = 8192
         label = f'H100 80GB class ({gpu_name}, CC={compute_capability})'
     elif vram_gb >= 75:        # A100 80GB
         # bs=512/n_pts=8192 OOM di ball_query untuk with_geom.
         # 256/8192 ≈ 70-80 GB peak, aman untuk semua variant.
-        bs, nw, lr, flr = 2560, min(8, n_cpu), 2e-3, 2e-4   # v8 MAX-UTIL: BS 2560 (GPU 95GB ~65-70GB); lr di-override notebook
+        bs, nw, lr, flr = 3072, min(8, n_cpu), 2e-3, 2e-4   # v8 MAX-UTIL: BS 3072 (GPU 95GB ~80GB); lr di-override notebook
         n_pts = 8192
         label = f'A100 80GB class ({gpu_name}, CC={compute_capability})'
     elif vram_gb >= 35:        # A100 40GB
