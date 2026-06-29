@@ -185,7 +185,13 @@ abstraction + ball query) → struktur lokal multi-skala telapak; (3) permutatio
 - [ ] (opsional) uji signifikansi berpasangan softmax vs arcface (per alignment; data 5-seed sudah ada)
 - [ ] (opsional) analisa kegagalan: identitas mana tertukar di A0/A3@90° (terlihat di confusion)
 
-## 14. Justifikasi multi-frame fusion (N×M) — untuk Method/Protocol
+## 14. Multi-frame fusion (N×M) — KEPUTUSAN protokol (bukan temuan)
+**Klasifikasi:** multi-frame fusion = **teknik evaluasi standar** → ditulis sebagai **keputusan desain**
+di *Method/Evaluation Protocol*, **BUKAN** sebagai temuan/kontribusi, dan **TIDAK masuk judul**.
+Angka SF(N1M1)→MF(N5M5) boleh tampil di *Results* sebagai **ablasi pendukung minor** (bukti keputusan
+masuk akal), bukan klaim utama. (Pengecualian: hanya jika kelak kita usulkan **metode fusi baru** —
+mis. quality-weighted — barulah ia jadi kontribusi & boleh ke judul. Saat ini = mean standar.)
+
 **Apa:** saat enroll & probe, ambil **N** frame (enroll) dan **M** frame (probe) dari satu sesi, fusikan
 embedding-nya (mean) sebelum matching. Headline **N5M5**; grid penuh N,M∈{1,3,5,10} dilaporkan
 (`fusion/<cfg>.png`).
