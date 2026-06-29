@@ -29,6 +29,16 @@ DerivedData/
 # Handover build artifact (download-only, regenerate from presentations/)
 /handover_claude_design.zip
 
+# LaTeX build artifacts (paper/) — source (.tex/.bib/figs) tetap di-track
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.synctex.gz
+paper/*.fdb_latexmk
+paper/*.fls
+
 # Dataset TIDAK lagi disimpan di git (repo ramping — lihat docs/DATA_RELEASE_WORKFLOW.md).
 # Per versi data dikemas (pack_dataset_release.py) → di-upload sbg aset GitHub Release
 # (tag data-vN) → Colab mengunduh+extract via release_assets.pull_dataset (BUKAN clone).
