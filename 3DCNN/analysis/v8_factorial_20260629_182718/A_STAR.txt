@@ -1,0 +1,2 @@
+A_accuracy	A2	align_centerscale
+A_robust	A4	align_pca_robust
