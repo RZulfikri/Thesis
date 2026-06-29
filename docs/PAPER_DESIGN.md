@@ -135,6 +135,9 @@ masuk training/eval → nuisance operasional tersisa = **pose tangan = rotasi**.
   1 seed = 12 unit (~6 jam); 5 runtime paralel → ~6 jam wall-clock 60 unit.
 - Evidence (CSV/figur) → `3DCNN/analysis/v8_factorial_<TS>/` (ter-commit). **Re-run `analyze()` instan**
   (baca cache `ablation_results.pkl`) → regen figur tanpa eval ulang.
+- **Eval deterministik**: subsample 8192 titik di `_load_frame` di-seed per-frame (hash path) → EER
+  **reproducible** (run ulang = angka identik; cache/batch tak mengubah hasil). Encoding di-batch
+  (`EVAL_BATCH`) untuk utilisasi GPU.
 
 ## 10. Estimasi compute
 - Training: 60 run (~6 jam bila 5 runtime paralel @95GB; ~20–30 jam L4 single).

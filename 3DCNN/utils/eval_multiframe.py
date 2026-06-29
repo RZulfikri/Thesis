@@ -66,14 +66,14 @@ def _load_frame(frame_dir: Path, n_points: int = 1024,
     pts, geom = load_session(frame_dir, repr_mode=repr_mode)   # (N,6), (13,)
     pts = pts[:, :6]
 
-    # Subsample / pad ke n_points. Untuk R3 (fps_npy, sudah 8192) dengan n_points=8192
-    # → len==n_points: tidak ada sampling acak (deterministik).
-    if len(pts) >= n_points:
-        idx = np.random.choice(len(pts), n_points, replace=False)
-        pts = pts[idx]
-    else:
-        idx = np.random.choice(len(pts), n_points, replace=True)
-        pts = pts[idx]
+    # Subsample/pad ke n_points dgn RNG DETERMINISTIK per-frame (seed dari path, stabil lintas
+    # proses) → eval 100% reproducible: embedding per-frame identik lintas run/cache/batch,
+    # tak lagi bergantung state RNG global. (Dulu np.random.choice global → eval non-deterministik.)
+    import hashlib
+    _seed = int(hashlib.md5(str(frame_dir).encode()).hexdigest()[:8], 16)
+    _rng = np.random.default_rng(_seed)
+    idx = _rng.choice(len(pts), n_points, replace=len(pts) < n_points)
+    pts = pts[idx]
 
     geom = geom.astype(np.float32)
     if normalizer is not None:
