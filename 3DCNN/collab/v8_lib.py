@@ -452,7 +452,8 @@ def _det_roc(gen, imp, n=300):
     far = np.array([(imp >= t).mean() for t in thr])
     frr = np.array([(gen < t).mean() for t in thr])
     tar = 1 - frr
-    auc = float(np.trapz(tar[::-1], far[::-1]))
+    _trapz = getattr(np, 'trapezoid', None) or np.trapz  # numpy>=2 pakai trapezoid
+    auc = float(_trapz(tar[::-1], far[::-1]))
     i = int(np.argmin(np.abs(far - frr)))
     return far, frr, tar, auc, float((far[i] + frr[i]) / 2)
 
@@ -508,72 +509,123 @@ def analyze():
     print(f'[baseline] (A0,softmax) EER = {eer_mean[0, lnames.index("softmax")]*100:.2f}%')
     (ANA_DIR / 'A_STAR.txt').write_text(f'{a_star}\t{a_star_repr}\n')
 
-    key_cfgs = [f'A0_softmax', f'A0_arcface', f'{a_star}_softmax', f'{a_star}_arcface']
-
-    # ---- 2. DET/ROC (4 config kunci) ----
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 5))
-    for cfg_id in key_cfgs:
-        r = _first_res(cfg_id, ab)
-        if r is None:
-            continue
-        G, gl, P, pl = _unpack_gp(r['gallery_embs'], r['probe_embs'])
-        gen, imp = _gi_scores(G, gl, P, pl)
-        if len(gen) == 0 or len(imp) == 0:
-            continue
-        far, frr, tar, auc, eer = _det_roc(gen, imp)
-        lbl = f'{cfg_id} AUC={auc:.3f} EER={eer:.3f}'
-        a1.plot(np.clip(far, 1e-3, 1), np.clip(frr, 1e-3, 1), label=lbl)
-        a2.plot(far, tar, label=lbl)
-    a1.set_xscale('log'); a1.set_yscale('log'); a1.set_xlabel('FAR'); a1.set_ylabel('FRR')
-    a1.set_title('DET (N5M5)'); a1.grid(True, which='both', alpha=.3); a1.legend(fontsize=8)
-    a2.plot([0, 1], [0, 1], 'k--', alpha=.4); a2.set_xlabel('FAR'); a2.set_ylabel('TAR')
-    a2.set_title('ROC (N5M5)'); a2.grid(True, alpha=.3); a2.legend(fontsize=8)
-    plt.tight_layout(); plt.savefig(ANA_DIR / 'det_roc.png', bbox_inches='tight'); plt.close()
-
-    # ---- 3. Confusion matrix + CMC (4 config kunci) ----
+    # konfigurasi figur: semua 6 alignment × 2 loss, file TERPISAH per hasil (mudah disisip ke paper)
+    AID_LIST = [a for a, _ in ALIGNMENTS]
+    REPR_OF = dict(ALIGNMENTS)
+    acolor = {a: plt.get_cmap('tab10')(i) for i, a in enumerate(AID_LIST)}
+    (ANA_DIR / 'confusion').mkdir(exist_ok=True)
+    (ANA_DIR / 'tsne').mkdir(exist_ok=True)
     from sklearn.metrics import confusion_matrix
-    fig, axes = plt.subplots(1, len(key_cfgs), figsize=(3 * len(key_cfgs), 3), squeeze=False)
-    figc, axc = plt.subplots(figsize=(7, 5))
-    for ax, cfg_id in zip(axes[0], key_cfgs):
+
+    def _gp(cfg_id):
         r = _first_res(cfg_id, ab)
         if r is None:
-            ax.set_title(f'{cfg_id} (no data)', fontsize=8); ax.axis('off'); continue
+            return None
         G, gl, P, pl = _unpack_gp(r['gallery_embs'], r['probe_embs'])
+        if len(gl) == 0 or len(pl) == 0:
+            return None
+        return G, gl, P, pl
+
+    # ---- 2. DET & ROC: 1 file per loss, overlay 6 alignment (figur perbandingan) ----
+    for lname in lnames:
+        figd, axd = plt.subplots(figsize=(6, 5))
+        figr, axr = plt.subplots(figsize=(6, 5))
+        for aid in AID_LIST:
+            gp = _gp(f'{aid}_{lname}')
+            if gp is None:
+                continue
+            G, gl, P, pl = gp
+            gen, imp = _gi_scores(G, gl, P, pl)
+            if len(gen) == 0 or len(imp) == 0:
+                continue
+            far, frr, tar, auc, eer = _det_roc(gen, imp)
+            c = acolor[aid]
+            axd.plot(np.clip(far, 1e-3, 1), np.clip(frr, 1e-3, 1), color=c,
+                     label=f'{aid} {REPR_OF[aid]} (EER={eer*100:.2f}%)')
+            axr.plot(far, tar, color=c, label=f'{aid} {REPR_OF[aid]} (AUC={auc:.3f})')
+        axd.set_xscale('log'); axd.set_yscale('log'); axd.set_xlabel('FAR'); axd.set_ylabel('FRR')
+        axd.set_title(f'DET — {lname} (N5M5, holdout)')
+        axd.grid(True, which='both', alpha=.3); axd.legend(fontsize=7)
+        figd.tight_layout(); figd.savefig(ANA_DIR / f'det_{lname}.png', bbox_inches='tight'); plt.close(figd)
+        axr.plot([0, 1], [0, 1], 'k--', alpha=.4); axr.set_xlabel('FAR'); axr.set_ylabel('TAR')
+        axr.set_title(f'ROC — {lname} (N5M5, holdout)')
+        axr.grid(True, alpha=.3); axr.legend(fontsize=7)
+        figr.tight_layout(); figr.savefig(ANA_DIR / f'roc_{lname}.png', bbox_inches='tight'); plt.close(figr)
+
+    # ---- 3. CMC: 1 file per loss, overlay 6 alignment ----
+    for lname in lnames:
+        figm, axm = plt.subplots(figsize=(6, 5))
+        for aid in AID_LIST:
+            gp = _gp(f'{aid}_{lname}')
+            if gp is None:
+                continue
+            G, gl, P, pl = gp
+            sim = _l2(P) @ _l2(G).T
+            ranks = []
+            for i, t in enumerate(pl):
+                order = np.argsort(-sim[i]); ranks.append(next(k for k, j in enumerate(order) if gl[j] == t))
+            ranks = np.array(ranks); K = len(gl)
+            axm.plot(range(1, K + 1), [(ranks <= k).mean() for k in range(K)],
+                     marker='o', ms=3, color=acolor[aid], label=f'{aid} {REPR_OF[aid]}')
+        axm.set_xlabel('Rank'); axm.set_ylabel('Identification rate')
+        axm.set_title(f'CMC — {lname} (N5M5, holdout)'); axm.grid(alpha=.3); axm.legend(fontsize=8)
+        figm.tight_layout(); figm.savefig(ANA_DIR / f'cmc_{lname}.png', bbox_inches='tight'); plt.close(figm)
+
+    # ---- 4. Confusion matrix: 1 file PER config (berlabel identitas) ----
+    for cfg_id, _rm, _lt, _m in GRID:
+        gp = _gp(cfg_id)
+        if gp is None:
+            continue
+        G, gl, P, pl = gp
         sim = _l2(P) @ _l2(G).T
         pred = [gl[j] for j in sim.argmax(1)]
         labs = sorted(set(gl)); cm = confusion_matrix(pl, pred, labels=labs)
         acc = float(np.trace(cm) / max(cm.sum(), 1))
-        ax.imshow(cm, cmap='Blues'); ax.set_title(f'{cfg_id}\nrank1={acc:.3f}', fontsize=8)
-        ax.set_xticks([]); ax.set_yticks([])
-        ranks = []
-        for i, t in enumerate(pl):
-            order = np.argsort(-sim[i]); ranks.append(next(k for k, j in enumerate(order) if gl[j] == t))
-        ranks = np.array(ranks); K = len(gl)
-        axc.plot(range(1, K + 1), [(ranks <= k).mean() for k in range(K)], marker='o', ms=3, label=cfg_id)
-    fig.suptitle('Confusion matrix (N5M5, rank-1)')
-    fig.tight_layout(); fig.savefig(ANA_DIR / 'confusion_matrix.png', bbox_inches='tight'); plt.close(fig)
-    axc.set_xlabel('Rank'); axc.set_ylabel('Identification rate'); axc.set_title('CMC (N5M5)')
-    axc.grid(alpha=.3); axc.legend(fontsize=8)
-    figc.tight_layout(); figc.savefig(ANA_DIR / 'cmc.png', bbox_inches='tight'); plt.close(figc)
+        sz = max(5.0, 0.5 * len(labs) + 2)
+        figx, axx = plt.subplots(figsize=(sz, sz - 0.5))
+        im = axx.imshow(cm, cmap='Blues')
+        axx.set_xticks(range(len(labs))); axx.set_yticks(range(len(labs)))
+        axx.set_xticklabels(labs, rotation=90, fontsize=7); axx.set_yticklabels(labs, fontsize=7)
+        axx.set_xlabel('Prediksi (predicted)'); axx.set_ylabel('Sebenarnya (true)')
+        axx.set_title(f'Confusion — {cfg_id}\nrank-1 = {acc*100:.1f}%  (N5M5, holdout)')
+        thr = cm.max() / 2 if cm.max() else 0
+        for ii in range(len(labs)):
+            for jj in range(len(labs)):
+                if cm[ii, jj] > 0:
+                    axx.text(jj, ii, int(cm[ii, jj]), ha='center', va='center',
+                             fontsize=6, color='white' if cm[ii, jj] > thr else 'black')
+        figx.colorbar(im, ax=axx, fraction=0.046, pad=0.04, label='jumlah')
+        figx.tight_layout(); figx.savefig(ANA_DIR / 'confusion' / f'{cfg_id}.png', bbox_inches='tight'); plt.close(figx)
 
-    # ---- 4. t-SNE (4 config kunci) ----
+    # ---- 5. t-SNE: 1 file PER config (★=template gallery, ●=probe; warna per identitas) ----
     try:
         from sklearn.manifold import TSNE
-        fig, axes = plt.subplots(1, len(key_cfgs), figsize=(3 * len(key_cfgs), 3), squeeze=False)
-        for ax, cfg_id in zip(axes[0], key_cfgs):
-            r = _first_res(cfg_id, ab)
-            if r is None:
-                ax.set_title(f'{cfg_id} (no data)', fontsize=8); ax.axis('off'); continue
-            G, gl, P, pl = _unpack_gp(r['gallery_embs'], r['probe_embs'])
-            X = np.vstack([G, P]); y = list(gl) + list(pl)
+        all_ids = []
+        for cfg_id, _r, _l, _m in GRID:
+            g = _gp(cfg_id)
+            if g:
+                all_ids = sorted(set(g[1])); break
+        idcolor = {l: plt.get_cmap('tab20')(i % 20) for i, l in enumerate(all_ids)}
+        for cfg_id, _rm, _lt, _m in GRID:
+            gp = _gp(cfg_id)
+            if gp is None:
+                continue
+            G, gl, P, pl = gp
+            X = np.vstack([G, P]); ng = len(gl)
+            if len(X) < 4:
+                continue
             Z = TSNE(n_components=2, perplexity=max(5, min(30, len(X) - 1)),
                      init='pca', random_state=0).fit_transform(X)
-            for lab in sorted(set(y)):
-                idx = [k for k, yy in enumerate(y) if yy == lab]
-                ax.scatter(Z[idx, 0], Z[idx, 1], s=10)
-            ax.set_title(cfg_id, fontsize=8); ax.set_xticks([]); ax.set_yticks([])
-        fig.suptitle('t-SNE embedding (gallery+probe, N5M5)')
-        fig.tight_layout(); fig.savefig(ANA_DIR / 'tsne.png', bbox_inches='tight'); plt.close(fig)
+            figt, axt = plt.subplots(figsize=(6, 5)); seen = set()
+            for k, l in enumerate(gl):
+                axt.scatter(Z[k, 0], Z[k, 1], s=90, marker='*', color=idcolor.get(l, 'gray'),
+                            edgecolors='k', linewidths=.5, label=(l if l not in seen else None)); seen.add(l)
+            for k, l in enumerate(pl):
+                axt.scatter(Z[ng + k, 0], Z[ng + k, 1], s=16, marker='o',
+                            color=idcolor.get(l, 'gray'), alpha=.7)
+            axt.set_title(f't-SNE — {cfg_id}  (★=template, ●=probe)')
+            axt.set_xticks([]); axt.set_yticks([]); axt.legend(fontsize=6, ncol=2, loc='best', framealpha=.6)
+            figt.tight_layout(); figt.savefig(ANA_DIR / 'tsne' / f'{cfg_id}.png', bbox_inches='tight'); plt.close(figt)
     except Exception as e:
         print(f'[analyze] t-SNE dilewati: {e}')
 
