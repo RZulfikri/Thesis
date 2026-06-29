@@ -1,0 +1,13 @@
+config,alignment,loss,repr_mode,eer_n5m5_mean,eer_n5m5_std,n_seed
+A0_softmax,A0,softmax,raw_ply,0.1206060606060606,0.03343785266456658,5
+A0_arcface,A0,arcface,raw_ply,0.15545454545454546,0.037940555699126154,5
+A1_softmax,A1,softmax,align_center,0.03757575757575756,0.022420147046174434,5
+A1_arcface,A1,arcface,align_center,0.00636363636363636,0.00921132372943676,5
+A2_softmax,A2,softmax,align_centerscale,0.0,0.0,5
+A2_arcface,A2,arcface,align_centerscale,0.0,0.0,5
+A3_softmax,A3,softmax,canonical_npy,0.00030303030303030303,0.0006060606060606061,5
+A3_arcface,A3,arcface,canonical_npy,0.0,0.0,5
+A4_softmax,A4,softmax,align_pca_robust,0.013030303030303026,0.014168084518255703,5
+A4_arcface,A4,arcface,align_pca_robust,0.0054545454545454515,0.008656276883082237,5
+A5_softmax,A5,softmax,align_anatomical,0.0012121212121212121,0.0024242424242424242,5
+A5_arcface,A5,arcface,align_anatomical,0.004545454545454543,0.005420770854544939,5
