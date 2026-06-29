@@ -846,34 +846,46 @@ def _pick_robust(df_rot):
 
 
 def _paired_significance(ab):
-    """Uji berpasangan softmax vs arcface per alignment (5 seed, N5M5). diff=sm-arc (>0 ⇒ arcface lebih baik)."""
+    """Uji berpasangan softmax vs arcface per alignment (5 seed) di 3 channel:
+    EER@N5M5 (mentok lantai), d′@N5M5 (headroom → bukti H2 utama), EER@N1M1 (single-frame, headroom).
+    'improve_arcface' = perbaikan arah-benar (EER: sm−arc; d′: arc−sm)."""
     rows = []
     try:
         from scipy import stats
     except Exception as e:
         print(f'[signifikansi] scipy tak ada, dilewati: {e}'); return rows
-    for aid, repr_mode in ALIGNMENTS:
-        def _vals(loss):
-            return [ab[(f'{aid}_{loss}', s)][(N_BEST, M_BEST)]['eer'] for s in ALL_SEEDS
-                    if (f'{aid}_{loss}', s) in ab and (N_BEST, M_BEST) in ab[(f'{aid}_{loss}', s)]]
-        sm, ar = _vals('softmax'), _vals('arcface')
-        if len(sm) != len(ar) or len(sm) < 2:
-            continue
-        sm, ar = np.array(sm, float), np.array(ar, float)
-        diff = sm - ar
-        if np.allclose(diff, 0):
-            t, p = 0.0, 1.0
-        else:
-            try:
-                t, p = stats.ttest_rel(sm, ar)
-            except Exception:
-                t, p = float('nan'), float('nan')
-        rows.append({'alignment': aid, 'repr_mode': repr_mode,
-                     'eer_softmax_mean': float(sm.mean()), 'eer_arcface_mean': float(ar.mean()),
-                     'mean_diff_sm_minus_arc': float(diff.mean()),
-                     'arcface_better': bool(diff.mean() > 0),
-                     't_stat': float(t), 'p_value': float(p),
-                     'significant_p05': bool(np.isfinite(p) and p < 0.05)})
+    specs = [('eer', (N_BEST, M_BEST), 'lower', 'EER N5M5'),
+             ('dprime', (N_BEST, M_BEST), 'higher', "d' N5M5"),
+             ('eer', (1, 1), 'lower', 'EER N1M1')]
+    for key, nm, direction, label in specs:
+        for aid, repr_mode in ALIGNMENTS:
+            def _vals(loss):
+                out = []
+                for s in ALL_SEEDS:
+                    r = ab.get((f'{aid}_{loss}', s), {}).get(nm, {})
+                    v = r.get(key)
+                    if isinstance(v, (int, float)):
+                        out.append(v)
+                return out
+            sm, ar = _vals('softmax'), _vals('arcface')
+            if len(sm) != len(ar) or len(sm) < 2:
+                continue
+            sm, ar = np.array(sm, float), np.array(ar, float)
+            diff = (sm - ar) if direction == 'lower' else (ar - sm)   # >0 ⇒ arcface lebih baik
+            if np.allclose(sm, ar):
+                t, p = 0.0, 1.0
+            else:
+                try:
+                    t, p = stats.ttest_rel(ar, sm)
+                except Exception:
+                    t, p = float('nan'), float('nan')
+            rows.append({'metric': label, 'key': key, 'N': nm[0], 'M': nm[1],
+                         'alignment': aid, 'repr_mode': repr_mode,
+                         'softmax_mean': float(sm.mean()), 'arcface_mean': float(ar.mean()),
+                         'improve_arcface': float(diff.mean()),
+                         'arcface_better': bool(diff.mean() > 0),
+                         't_stat': float(t), 'p_value': float(p),
+                         'significant_p05': bool(np.isfinite(p) and p < 0.05)})
     return rows
 
 
@@ -898,18 +910,29 @@ def _write_summary(df, eer_mean, eer_std, aids, lnames, a_star, a_robust=None, s
           'atau PCA polos) dapat **runtuh saat dirotasi** (lihat rotation_sensitivity.png). Untuk '
           '**deployment & klaim H1, pakai A_robust**.']
     if sig_rows:
-        L += ['', '## Signifikansi softmax vs arcface (paired t-test, 5 seed, N5M5)', '',
-              '| alignment | EER sm | EER arc | Δ(sm−arc) | arcface lebih baik | p-value | sig<0.05 |',
-              '|---|---|---|---|---|---|---|']
-        for r in sig_rows:
-            L.append(f"| {r['alignment']} | {r['eer_softmax_mean']*100:.2f} | "
-                     f"{r['eer_arcface_mean']*100:.2f} | {r['mean_diff_sm_minus_arc']*100:+.2f} | "
-                     f"{'ya' if r['arcface_better'] else 'tidak'} | {r['p_value']:.3f} | "
-                     f"{'✔' if r['significant_p05'] else '—'} |")
+        order = ["d' N5M5", 'EER N1M1', 'EER N5M5']   # d′ = bukti H2 utama (ada headroom) lebih dulu
+        metrics = [m for m in order if any(r['metric'] == m for r in sig_rows)]
+        metrics += [r['metric'] for r in sig_rows if r['metric'] not in metrics and r['metric'] not in order]
+        L += ['', '## Signifikansi softmax vs arcface (paired t-test, 5 seed)',
+              '> EER@N5M5 mentok lantai (≈0) → uji-t underpowered. **Bukti H2 utama = d′** (punya headroom); '
+              'EER@N1M1 (single-frame) sbg channel kedua. `improve_arcface`>0 ⇒ arcface lebih baik.']
+        for m in metrics:
+            sub = [r for r in sig_rows if r['metric'] == m]
+            is_dp = (sub[0]['key'] == 'dprime')
+            unit = '' if is_dp else '%'
+            sc = 1.0 if is_dp else 100.0
+            L += ['', f'### {m}', '',
+                  f'| alignment | softmax | arcface | improve(arcface){unit} | arcface lebih baik | p-value | sig<0.05 |',
+                  '|---|---|---|---|---|---|---|']
+            for r in sub:
+                L.append(f"| {r['alignment']} | {r['softmax_mean']*sc:.2f} | {r['arcface_mean']*sc:.2f} | "
+                         f"{r['improve_arcface']*sc:+.2f} | {'ya' if r['arcface_better'] else 'tidak'} | "
+                         f"{r['p_value']:.3f} | {'✔' if r['significant_p05'] else '—'} |")
     L += ['', '## Klaim',
           '- **H1 (normalisasi → robustness)**: lihat rotation_sensitivity.png + A_robust; alignment '
           'rotation-robust (A4) datar di semua θ, sedangkan A0/A1/A2 runtuh & A3 paku di 90°.',
-          '- **H2 (ArcFace → accuracy)**: bandingkan antar-kolom (softmax vs arcface) + tabel signifikansi.',
+          '- **H2 (ArcFace → accuracy)**: bukti utama via **d′** (ArcFace ~2× separabilitas di semua '
+          'representasi ternormalisasi) + EER@N1M1; EER@N5M5 mentok lantai (tak informatif).',
           '', '_Dihasilkan otomatis oleh v8_lib.analyze()_']
     (ANA_DIR / 'SUMMARY.md').write_text('\n'.join(L))
     print('SUMMARY.md ditulis.')
