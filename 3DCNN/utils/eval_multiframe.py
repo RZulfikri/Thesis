@@ -92,35 +92,52 @@ def _encode_frames(
     normalizer=None,
     repr_mode: str = "canonical_npy",
     frame_cache: dict | None = None,
+    batch_size: int = 128,
 ) -> np.ndarray:
     """
-    Encode daftar frame_dirs menjadi embedding matrix.
+    Encode daftar frame_dirs menjadi embedding matrix — BATCHED (GPU efisien).
 
     frame_cache: bila diberikan (dict), embedding per-frame_dir di-memoize → frame yang
     sama TIDAK di-encode ulang lintas pemanggilan (mis. sweep N×M). Aman untuk paritas
     karena (model, repr_mode, n_points, normalizer) konstan dalam satu sweep; key = frame_dir.
 
+    Frame di-encode dalam batch (default 128) bukan satu-per-satu → utilisasi GPU jauh
+    lebih tinggi. Paritas numerik terjaga: model.eval() ⇒ BatchNorm pakai running-stats
+    (batch-invariant); forward batch == forward per-sampel.
+
     Returns:
-        embeddings : (len(frame_dirs), D) float32 numpy
+        embeddings : (len(frame_dirs), D) float32 numpy  (urutan = frame_dirs, gagal-load dibuang)
     """
     model.eval()
-    embeddings = []
-    with torch.no_grad():
-        for fd in frame_dirs:
-            if frame_cache is not None and fd in frame_cache:
-                embeddings.append(frame_cache[fd]); continue
-            try:
-                pts_t, geom_t = _load_frame(fd, n_points=n_points, normalizer=normalizer,
-                                            repr_mode=repr_mode)
-                pts_t  = pts_t.to(device)
-                geom_t = geom_t.to(device)
-                emb = model.encoder(pts_t, geom_t)   # (1, D) L2-normed
-                e = emb.squeeze(0).cpu().numpy()
-                embeddings.append(e)
-                if frame_cache is not None:
-                    frame_cache[fd] = e
-            except Exception as e:
-                print(f"[WARN] Gagal encode {fd}: {e}")
+    out = [None] * len(frame_dirs)
+    pend_i, pend_pts, pend_geom = [], [], []
+
+    def _flush():
+        if not pend_i:
+            return
+        with torch.no_grad():
+            pts = torch.cat(pend_pts, 0).to(device)
+            geom = torch.cat(pend_geom, 0).to(device)
+            emb = model.encoder(pts, geom).cpu().numpy()   # (B, D) L2-normed
+        for k, idx in enumerate(pend_i):
+            out[idx] = emb[k]
+            if frame_cache is not None:
+                frame_cache[frame_dirs[idx]] = emb[k]
+        pend_i.clear(); pend_pts.clear(); pend_geom.clear()
+
+    for i, fd in enumerate(frame_dirs):
+        if frame_cache is not None and fd in frame_cache:
+            out[i] = frame_cache[fd]; continue
+        try:
+            pts_t, geom_t = _load_frame(fd, n_points=n_points, normalizer=normalizer,
+                                        repr_mode=repr_mode)
+        except Exception as e:
+            print(f"[WARN] Gagal encode {fd}: {e}"); continue
+        pend_i.append(i); pend_pts.append(pts_t); pend_geom.append(geom_t)
+        if len(pend_i) >= batch_size:
+            _flush()
+    _flush()
+    embeddings = [e for e in out if e is not None]
     return np.stack(embeddings) if embeddings else np.zeros((0, 128))
 
 

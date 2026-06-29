@@ -704,14 +704,18 @@ def _derive_repr(raw6, repr_mode):
     return align_cloud6(raw6.astype(np.float32), _R2A.get(repr_mode, 'pca'), handedness=None)
 
 
-def _encode_rot(model, splits, repr_mode, normalizer, n_frames, deg, rng):
+def _encode_rot(model, splits, repr_mode, normalizer, n_frames, deg, rng, batch_size=128):
+    """Encode pipeline-rotasi BATCHED: load raw → rotasi → derive repr → encode (batch) → fuse per sesi.
+    Paritas: model.eval() (BN running-stats) ⇒ batch-invariant; rng dipakai per-frame urutan sama."""
     import torch
+    from collections import defaultdict
     from utils.eval_multiframe import _sample_n_frames, fuse_embeddings
     from utils.dataset import load_session
-    embs, labs = [], []; model.eval()
+    model.eval()
+    keys, pts_list, geom_list, order = [], [], [], []
     for label, sdirs in splits.items():
-        for sdir in sdirs:
-            per = []
+        for si, sdir in enumerate(sdirs):
+            skey = (label, si); cnt = 0
             for fd in _sample_n_frames(sdir, n_frames, seed=42):
                 try:
                     raw6, geom = load_session(Path(fd), repr_mode='raw_ply')
@@ -723,14 +727,25 @@ def _encode_rot(model, splits, repr_mode, normalizer, n_frames, deg, rng):
                     pts = pts[idx]; geom = geom.astype(np.float32)
                     if normalizer is not None:
                         geom = normalizer.transform(geom)
-                    pt = torch.from_numpy(np.ascontiguousarray(pts)).unsqueeze(0).to(DEVICE)
-                    gt = torch.from_numpy(geom).unsqueeze(0).to(DEVICE)
-                    with torch.no_grad():
-                        per.append(model.encoder(pt, gt).squeeze(0).cpu().numpy())
+                    keys.append(skey)
+                    pts_list.append(torch.from_numpy(np.ascontiguousarray(pts)).unsqueeze(0))
+                    geom_list.append(torch.from_numpy(geom).unsqueeze(0))
+                    cnt += 1
                 except Exception as ex:
                     print(f'  [WARN] rot {fd}: {ex}')
-            if per:
-                embs.append(fuse_embeddings(np.stack(per), 'mean')); labs.append(label)
+            if cnt:
+                order.append(skey)
+    embs_by_sess = defaultdict(list)
+    with torch.no_grad():
+        for b in range(0, len(keys), batch_size):
+            pt = torch.cat(pts_list[b:b + batch_size], 0).to(DEVICE)
+            gt = torch.cat(geom_list[b:b + batch_size], 0).to(DEVICE)
+            e = model.encoder(pt, gt).cpu().numpy()
+            for k, skey in enumerate(keys[b:b + batch_size]):
+                embs_by_sess[skey].append(e[k])
+    embs, labs = [], []
+    for skey in order:
+        embs.append(fuse_embeddings(np.stack(embs_by_sess[skey]), 'mean')); labs.append(skey[0])
     return np.array(embs), labs
 
 
