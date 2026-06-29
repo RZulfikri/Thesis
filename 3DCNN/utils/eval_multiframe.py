@@ -91,9 +91,14 @@ def _encode_frames(
     n_points: int = 1024,
     normalizer=None,
     repr_mode: str = "canonical_npy",
+    frame_cache: dict | None = None,
 ) -> np.ndarray:
     """
     Encode daftar frame_dirs menjadi embedding matrix.
+
+    frame_cache: bila diberikan (dict), embedding per-frame_dir di-memoize → frame yang
+    sama TIDAK di-encode ulang lintas pemanggilan (mis. sweep N×M). Aman untuk paritas
+    karena (model, repr_mode, n_points, normalizer) konstan dalam satu sweep; key = frame_dir.
 
     Returns:
         embeddings : (len(frame_dirs), D) float32 numpy
@@ -102,13 +107,18 @@ def _encode_frames(
     embeddings = []
     with torch.no_grad():
         for fd in frame_dirs:
+            if frame_cache is not None and fd in frame_cache:
+                embeddings.append(frame_cache[fd]); continue
             try:
                 pts_t, geom_t = _load_frame(fd, n_points=n_points, normalizer=normalizer,
                                             repr_mode=repr_mode)
                 pts_t  = pts_t.to(device)
                 geom_t = geom_t.to(device)
                 emb = model.encoder(pts_t, geom_t)   # (1, D) L2-normed
-                embeddings.append(emb.squeeze(0).cpu().numpy())
+                e = emb.squeeze(0).cpu().numpy()
+                embeddings.append(e)
+                if frame_cache is not None:
+                    frame_cache[fd] = e
             except Exception as e:
                 print(f"[WARN] Gagal encode {fd}: {e}")
     return np.stack(embeddings) if embeddings else np.zeros((0, 128))
@@ -202,6 +212,7 @@ def eval_multiframe(
     seed: int | None = None,
     cross_session: bool = True,
     repr_mode: str = "canonical_npy",
+    frame_cache: dict | None = None,
 ) -> dict:
     """
     Evaluasi multi-frame verification (1:1) dengan enrollment dan probe fusion.
@@ -255,7 +266,8 @@ def eval_multiframe(
         frames = _sample_n_frames(enroll_sess, n_enroll, seed=seed)
         if not frames:
             continue
-        embs = _encode_frames(model, frames, device, n_points, normalizer, repr_mode=repr_mode)
+        embs = _encode_frames(model, frames, device, n_points, normalizer, repr_mode=repr_mode,
+                              frame_cache=frame_cache)
         if len(embs) == 0:
             continue
         gallery_embs[label] = fuse_embeddings(embs, fusion_strategy)
@@ -276,7 +288,8 @@ def eval_multiframe(
             frames = _sample_n_frames(probe_sess, m_probe, seed=seed)
             if not frames:
                 continue
-            embs = _encode_frames(model, frames, device, n_points, normalizer, repr_mode=repr_mode)
+            embs = _encode_frames(model, frames, device, n_points, normalizer, repr_mode=repr_mode,
+                                  frame_cache=frame_cache)
             if len(embs) == 0:
                 continue
             probe_emb = fuse_embeddings(embs, fusion_strategy)
@@ -347,6 +360,10 @@ def eval_multiframe_ablation(
     total = len(n_list) * len(m_list)
     count = 0
 
+    # cache embedding per-frame: frame yang sama tak di-encode ulang lintas (N,M) → ~Nx lebih cepat.
+    # Aman utk paritas: model/repr_mode/n_points/normalizer konstan di seluruh sweep ini.
+    frame_cache: dict = {}
+
     for n in n_list:
         for m in m_list:
             count += 1
@@ -365,6 +382,7 @@ def eval_multiframe_ablation(
                 normalizer=normalizer,
                 seed=seed,
                 repr_mode=repr_mode,
+                frame_cache=frame_cache,
             )
             results[(n, m)] = res
 

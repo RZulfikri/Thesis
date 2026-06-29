@@ -629,7 +629,63 @@ def analyze():
     except Exception as e:
         print(f'[analyze] t-SNE dilewati: {e}')
 
-    # ---- 5. Robustness rotasi (overlay softmax vs arcface per alignment) ----
+    # ---- 6. Fusion N×M heatmap: 1 file per config (bukti manfaat multi-frame) ----
+    (ANA_DIR / 'fusion').mkdir(exist_ok=True)
+    nl, ml = N_LIST, M_LIST
+    fusion_rows = []
+    for cfg_id, _rm, _lt, _m in GRID:
+        grid_e = np.full((len(nl), len(ml)), np.nan)
+        for ii, n in enumerate(nl):
+            for jj, mm in enumerate(ml):
+                vals = [ab[(cfg_id, s)][(n, mm)]['eer'] for s in ALL_SEEDS
+                        if (cfg_id, s) in ab and (n, mm) in ab[(cfg_id, s)]
+                        and 'eer' in ab[(cfg_id, s)][(n, mm)]]
+                if vals:
+                    grid_e[ii, jj] = np.mean(vals)
+                    fusion_rows.append({'config': cfg_id, 'N': n, 'M': mm,
+                                        'eer_mean': float(np.mean(vals)), 'eer_std': float(np.std(vals))})
+        if np.all(np.isnan(grid_e)):
+            continue
+        figf, axf = plt.subplots(figsize=(4.5, 4))
+        im = axf.imshow(grid_e * 100, cmap='viridis_r')
+        axf.set_xticks(range(len(ml))); axf.set_xticklabels(ml)
+        axf.set_yticks(range(len(nl))); axf.set_yticklabels(nl)
+        axf.set_xlabel('M (probe frames)'); axf.set_ylabel('N (enroll frames)')
+        axf.set_title(f'Fusion N×M — EER% — {cfg_id}')
+        for ii in range(len(nl)):
+            for jj in range(len(ml)):
+                if not np.isnan(grid_e[ii, jj]):
+                    axf.text(jj, ii, f'{grid_e[ii,jj]*100:.2f}', ha='center', va='center',
+                             color='w', fontsize=7)
+        figf.colorbar(im, ax=axf, label='EER%')
+        figf.tight_layout(); figf.savefig(ANA_DIR / 'fusion' / f'{cfg_id}.png', bbox_inches='tight'); plt.close(figf)
+    pd.DataFrame(fusion_rows).to_csv(ANA_DIR / 'fusion_nm.csv', index=False)
+
+    # ---- 7. Tabel metrik lengkap (N5M5): EER/AUC/d'/rank-1/TAR@FAR/latency ----
+    mrows = []
+    for cfg_id, repr_mode, _lt, _m in GRID:
+        aid, lname = _split_cfg(cfg_id)
+        def _agg(key, _cfg=cfg_id):
+            vs = [ab[(_cfg, s)][(N_BEST, M_BEST)].get(key) for s in ALL_SEEDS
+                  if (_cfg, s) in ab and (N_BEST, M_BEST) in ab[(_cfg, s)]]
+            vs = [v for v in vs if isinstance(v, (int, float))]
+            return (float(np.mean(vs)), float(np.std(vs))) if vs else (np.nan, np.nan)
+        r1 = np.nan
+        gp = _gp(cfg_id)
+        if gp is not None:
+            G, gl, P, pl = gp
+            sim = _l2(P) @ _l2(G).T
+            pred = [gl[j] for j in sim.argmax(1)]
+            r1 = float(np.mean([p == t for p, t in zip(pred, pl)]))
+        eer_m, eer_s = _agg('eer'); auc_m, auc_s = _agg('auc'); dp_m, dp_s = _agg('dprime')
+        tar_m, _x = _agg('tar_at_far1'); lat_m, _y = _agg('latency_probe_s')
+        mrows.append({'config': cfg_id, 'alignment': aid, 'loss': lname, 'repr_mode': repr_mode,
+                      'eer_mean': eer_m, 'eer_std': eer_s, 'auc_mean': auc_m, 'auc_std': auc_s,
+                      'dprime_mean': dp_m, 'dprime_std': dp_s, 'tar_at_far1_mean': tar_m,
+                      'rank1': r1, 'latency_probe_s_mean': lat_m})
+    pd.DataFrame(mrows).to_csv(ANA_DIR / 'metrics_full.csv', index=False)
+
+    # ---- 8. Robustness rotasi (overlay softmax vs arcface per alignment) ----
     _rotation_analysis(a_star, plt, pd)
     # ---- 6. SUMMARY ----
     _write_summary(df, eer_mean, eer_std, aids, lnames, a_star)

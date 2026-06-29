@@ -179,9 +179,27 @@ abstraction + ball query) → struktur lokal multi-skala telapak; (3) permutatio
 - [x] CMC — semua alignment, 1 file per loss
 - [x] Confusion matrix — **1 file PER config**, berlabel identitas + Prediksi/Sebenarnya + colorbar + rank-1
 - [x] t-SNE — **1 file PER config** (★ gallery / ● probe, warna per identitas)
-- [ ] (opsional) speed/resource & determinism table
-- [ ] (opsional) uji signifikansi berpasangan softmax vs arcface (per alignment)
-- [ ] (opsional) analisa kegagalan: identitas mana tertukar di A0/A3@90°
+- [x] **Fusion N×M heatmap — 1 file PER config** (`fusion/<cfg>.png` + `fusion_nm.csv`) — bukti manfaat multi-frame
+- [x] **Tabel metrik lengkap** `metrics_full.csv` (EER/AUC/d′/rank-1/TAR@FAR/latency, mean±std) — bukan hanya EER
+- [ ] (opsional) VRAM/disk per representasi (latency sudah ada di metrics_full)
+- [ ] (opsional) uji signifikansi berpasangan softmax vs arcface (per alignment; data 5-seed sudah ada)
+- [ ] (opsional) analisa kegagalan: identitas mana tertukar di A0/A3@90° (terlihat di confusion)
+
+## 14. Justifikasi multi-frame fusion (N×M) — untuk Method/Protocol
+**Apa:** saat enroll & probe, ambil **N** frame (enroll) dan **M** frame (probe) dari satu sesi, fusikan
+embedding-nya (mean) sebelum matching. Headline **N5M5**; grid penuh N,M∈{1,3,5,10} dilaporkan
+(`fusion/<cfg>.png`).
+**Kenapa perlu (justifikasi paper):**
+- **Single-frame TrueDepth bising** (jitter depth, frame-to-frame variance); fusi mean meredam noise →
+  estimasi embedding lebih stabil (efek seperti rata-rata ulangan pengukuran).
+- **Selaras dengan deployment**: scan kontactless menghasilkan **burst banyak frame** per presentasi, jadi
+  fusi N×M = pemakaian realistis, bukan trik evaluasi.
+- **Bukti empiris kita**: EER turun tajam SF→MF (grid N×M menunjukkan monoton membaik seiring N,M) — wajib
+  ditunjukkan via `fusion/<cfg>.png`. (Konsisten temuan v7.x: SF→MF turun ~71%.)
+- **N=M=5 sebagai titik operasi**: kompromi akurasi vs latency (latency probe ∝ M, ada di `metrics_full.csv`).
+**Wajib di-mention?** **Ya** — ini bagian protokol evaluasi (bukan sekadar detail). Tulis di sub-bab
+*Evaluation Protocol* + 1 figur fusion + sebut latency trade-off. Lapor angka SF (N1M1) vs MF (N5M5) sebagai
+ablasi pendukung.
 
 ## Catatan (di luar scope sekarang)
 - **Track C / QA-ArcFace** **di-drop** — H1/H2 tuntas oleh grid faktorial. Kode loss tetap di
