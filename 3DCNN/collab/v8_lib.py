@@ -205,6 +205,24 @@ def _detect_runtime():
           f'workers={NUM_WORKERS} | REPEAT={REPEAT} | N_POINTS={N_POINTS}')
 
 
+def shutdown_runtime(delay=8):
+    """Matikan runtime Colab setelah semua sel selesai (lepas GPU → hemat compute unit).
+    Beri jeda agar output/commit/Drive ter-flush dulu. Aman di luar Colab (fallback kill kernel)."""
+    import time
+    print(f'✅ Semua sel selesai. Mematikan runtime dalam {delay}s (melepas GPU)...', flush=True)
+    try:
+        time.sleep(delay)
+        from google.colab import runtime
+        runtime.unassign()                      # hentikan & bebaskan runtime/GPU
+    except Exception as e:
+        print(f'[shutdown] google.colab.runtime tak tersedia ({e}); fallback kill kernel.')
+        try:
+            import os, signal
+            os.kill(os.getpid(), signal.SIGKILL)
+        except Exception as e2:
+            print(f'[shutdown] gagal: {e2}')
+
+
 def _build_splits():
     global all_session_splits
     from utils.dataset_lowdata import build_lowdata_splits_session_dirs
