@@ -77,6 +77,7 @@ _REPR_FILE = {'raw_ply': 'output.ply', 'canonical_npy': 'cnn_input.npy', 'fps_np
 DEVICE = REPO_DIR = PROJECT_ROOT = DATA_DIR = DRIVE_ROOT = None
 RUNS_DIR = EVAL_DIR = ANA_DIR = TS = None
 BS = NUM_WORKERS = REPEAT = None
+EVAL_BATCH = 512          # batch encoding saat eval (inference, tanpa backward) — pas utk G100/95GB; turunkan bila GPU kecil
 AMP_MODE = 'bf16'
 all_session_splits = None
 GITHUB_TOKEN = None
@@ -374,7 +375,7 @@ def eval_all():
                 probe_session_splits=all_session_splits['holdout'],
                 n_list=N_LIST, m_list=M_LIST, fusion_strategy='mean',
                 device=DEVICE, n_points=N_POINTS, normalizer=normalizer,
-                seed=seed, repr_mode=repr_mode)
+                seed=seed, repr_mode=repr_mode, enc_batch_size=EVAL_BATCH)
             res[(cfg_id, seed)] = r
             eer = r.get((N_BEST, M_BEST), {}).get('eer', float('nan'))
             print(f'  {cfg_id} seed={seed}: EER(5,5)={eer:.4f}')
@@ -767,11 +768,13 @@ def _rotation_analysis(a_star, plt, pd):
         if model is None:
             continue
         rng = np.random.default_rng(42)
-        g_e, g_l = _encode_rot(model, all_session_splits['train'], repr_mode, normalizer, N_BEST, 0, rng)
+        g_e, g_l = _encode_rot(model, all_session_splits['train'], repr_mode, normalizer, N_BEST, 0, rng,
+                               batch_size=EVAL_BATCH)
         base = None
         for deg in ROT:
             rng = np.random.default_rng(123)
-            p_e, p_l = _encode_rot(model, all_session_splits['holdout'], repr_mode, normalizer, M_BEST, deg, rng)
+            p_e, p_l = _encode_rot(model, all_session_splits['holdout'], repr_mode, normalizer, M_BEST, deg, rng,
+                                   batch_size=EVAL_BATCH)
             gen, imp = _gi_scores(g_e, g_l, p_e, p_l)
             eer = _det_roc(gen, imp)[4] if len(gen) and len(imp) else float('nan')
             if deg == 0:

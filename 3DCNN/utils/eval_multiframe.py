@@ -230,6 +230,7 @@ def eval_multiframe(
     cross_session: bool = True,
     repr_mode: str = "canonical_npy",
     frame_cache: dict | None = None,
+    batch_size: int = 128,
 ) -> dict:
     """
     Evaluasi multi-frame verification (1:1) dengan enrollment dan probe fusion.
@@ -284,7 +285,7 @@ def eval_multiframe(
         if not frames:
             continue
         embs = _encode_frames(model, frames, device, n_points, normalizer, repr_mode=repr_mode,
-                              frame_cache=frame_cache)
+                              frame_cache=frame_cache, batch_size=batch_size)
         if len(embs) == 0:
             continue
         gallery_embs[label] = fuse_embeddings(embs, fusion_strategy)
@@ -306,7 +307,7 @@ def eval_multiframe(
             if not frames:
                 continue
             embs = _encode_frames(model, frames, device, n_points, normalizer, repr_mode=repr_mode,
-                                  frame_cache=frame_cache)
+                                  frame_cache=frame_cache, batch_size=batch_size)
             if len(embs) == 0:
                 continue
             probe_emb = fuse_embeddings(embs, fusion_strategy)
@@ -363,9 +364,11 @@ def eval_multiframe_ablation(
     seed: int | None = None,
     verbose: bool = True,
     repr_mode: str = "canonical_npy",
+    enc_batch_size: int = 128,
 ) -> dict:
     """
     Jalankan eval_multiframe untuk semua kombinasi (N, M) dalam n_list × m_list.
+    enc_batch_size: batch encoding (forward) — naikkan utk GPU besar (G100/A100).
 
     Returns:
         {
@@ -400,6 +403,7 @@ def eval_multiframe_ablation(
                 seed=seed,
                 repr_mode=repr_mode,
                 frame_cache=frame_cache,
+                batch_size=enc_batch_size,
             )
             results[(n, m)] = res
 
