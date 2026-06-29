@@ -501,14 +501,13 @@ def analyze():
     fig.colorbar(im, ax=ax, label='EER%')
     plt.tight_layout(); plt.savefig(ANA_DIR / 'factorial_eer_heatmap.png', bbox_inches='tight'); plt.close()
 
-    # pilih A* = alignment dgn EER terendah di kolom arcface
+    # A_accuracy = alignment EER terendah di kolom arcface (pose-kanonik); A_robust dihitung nanti dari rotasi
     jc = lnames.index('arcface')
     col = eer_mean[:, jc]
     a_star = aids[int(np.nanargmin(col))] if not np.all(np.isnan(col)) else 'A4'
     a_star_repr = dict(ALIGNMENTS)[a_star]
-    print(f'[A*] alignment terbaik (kolom arcface) = {a_star} ({a_star_repr})')
+    print(f'[A_accuracy] terbaik kolom arcface (pose-kanonik) = {a_star} ({a_star_repr})')
     print(f'[baseline] (A0,softmax) EER = {eer_mean[0, lnames.index("softmax")]*100:.2f}%')
-    (ANA_DIR / 'A_STAR.txt').write_text(f'{a_star}\t{a_star_repr}\n')
 
     # konfigurasi figur: semua 6 alignment × 2 loss, file TERPISAH per hasil (mudah disisip ke paper)
     AID_LIST = [a for a, _ in ALIGNMENTS]
@@ -687,9 +686,20 @@ def analyze():
     pd.DataFrame(mrows).to_csv(ANA_DIR / 'metrics_full.csv', index=False)
 
     # ---- 8. Robustness rotasi (overlay softmax vs arcface per alignment) ----
-    _rotation_analysis(a_star, plt, pd)
-    # ---- 6. SUMMARY ----
-    _write_summary(df, eer_mean, eer_std, aids, lnames, a_star)
+    df_rot = _rotation_analysis(plt, pd)
+    # ---- 8b. A_robust (worst-case EER θ>0, kolom arcface) + uji signifikansi + A_STAR.txt ----
+    a_robust = _pick_robust(df_rot)
+    a_robust_repr = dict(ALIGNMENTS).get(a_robust, '?')
+    sig_rows = _paired_significance(ab)
+    if sig_rows:
+        pd.DataFrame(sig_rows).to_csv(ANA_DIR / 'significance_softmax_vs_arcface.csv', index=False)
+    (ANA_DIR / 'A_STAR.txt').write_text(
+        f'A_accuracy\t{a_star}\t{a_star_repr}\n'
+        f'A_robust\t{a_robust}\t{a_robust_repr}\n')
+    print(f'[A*] A_accuracy(pose-kanonik)={a_star} ({a_star_repr}) | '
+          f'A_robust(worst-case rotasi)={a_robust} ({a_robust_repr})')
+    # ---- 9. SUMMARY ----
+    _write_summary(df, eer_mean, eer_std, aids, lnames, a_star, a_robust, sig_rows)
     print(f'[analyze] selesai → {ANA_DIR}')
 
 
@@ -750,7 +760,7 @@ def _encode_rot(model, splits, repr_mode, normalizer, n_frames, deg, rng, batch_
     return np.array(embs), labs
 
 
-def _rotation_analysis(a_star, plt, pd):
+def _rotation_analysis(plt, pd):
     import torch
     ROT = [0, 30, 60, 90, 180]
     ck = EVAL_DIR / 'rot_rows.pkl'
@@ -802,9 +812,54 @@ def _rotation_analysis(a_star, plt, pd):
     plt.title('Robustness rotasi (overlay: solid=arcface, dashed=softmax)')
     plt.grid(alpha=.3); plt.legend(fontsize=7, ncol=2)
     plt.tight_layout(); plt.savefig(ANA_DIR / 'rotation_sensitivity.png', bbox_inches='tight'); plt.close()
+    return df_rot
 
 
-def _write_summary(df, eer_mean, eer_std, aids, lnames, a_star):
+def _pick_robust(df_rot):
+    """A_robust = alignment dgn worst-case EER terendah pada rotasi θ>0 (kolom arcface)."""
+    try:
+        sub = df_rot[(df_rot['loss'] == 'arcface') & (df_rot['theta_deg'] > 0)]
+        if sub.empty:
+            return None
+        worst = sub.groupby('alignment')['eer'].max()   # worst-case per alignment
+        return str(worst.idxmin())                       # alignment dgn worst-case terbaik
+    except Exception as e:
+        print(f'[A_robust] gagal: {e}'); return None
+
+
+def _paired_significance(ab):
+    """Uji berpasangan softmax vs arcface per alignment (5 seed, N5M5). diff=sm-arc (>0 ⇒ arcface lebih baik)."""
+    rows = []
+    try:
+        from scipy import stats
+    except Exception as e:
+        print(f'[signifikansi] scipy tak ada, dilewati: {e}'); return rows
+    for aid, repr_mode in ALIGNMENTS:
+        def _vals(loss):
+            return [ab[(f'{aid}_{loss}', s)][(N_BEST, M_BEST)]['eer'] for s in ALL_SEEDS
+                    if (f'{aid}_{loss}', s) in ab and (N_BEST, M_BEST) in ab[(f'{aid}_{loss}', s)]]
+        sm, ar = _vals('softmax'), _vals('arcface')
+        if len(sm) != len(ar) or len(sm) < 2:
+            continue
+        sm, ar = np.array(sm, float), np.array(ar, float)
+        diff = sm - ar
+        if np.allclose(diff, 0):
+            t, p = 0.0, 1.0
+        else:
+            try:
+                t, p = stats.ttest_rel(sm, ar)
+            except Exception:
+                t, p = float('nan'), float('nan')
+        rows.append({'alignment': aid, 'repr_mode': repr_mode,
+                     'eer_softmax_mean': float(sm.mean()), 'eer_arcface_mean': float(ar.mean()),
+                     'mean_diff_sm_minus_arc': float(diff.mean()),
+                     'arcface_better': bool(diff.mean() > 0),
+                     't_stat': float(t), 'p_value': float(p),
+                     'significant_p05': bool(np.isfinite(p) and p < 0.05)})
+    return rows
+
+
+def _write_summary(df, eer_mean, eer_std, aids, lnames, a_star, a_robust=None, sig_rows=None):
     L = ['# v8 Factorial (alignment × loss) — Summary', '',
          f'**Tanggal**: {TS}',
          '**Desain**: faktorial {softmax, arcface} × {A0..A5}; closed-set gallery=train, '
@@ -819,11 +874,24 @@ def _write_summary(df, eer_mean, eer_std, aids, lnames, a_star):
                          if not np.isnan(eer_mean[i, j]) else 'N/A')
         L.append(f'| {aid} {repr_mode} | ' + ' | '.join(cells) + ' |')
     L += ['', f'**Baseline** (A0, softmax) = {eer_mean[0, lnames.index("softmax")]*100:.2f}% EER.',
-          f'**A*** (alignment terbaik, kolom arcface) = **{a_star}**.',
-          '', '## Klaim',
-          '- **H1 (normalisasi → robustness)**: bandingkan antar-baris (lihat rotation_sensitivity.png; '
-          'alignment ter-normalisasi datar di kedua loss, A0 raw naik).',
-          '- **H2 (ArcFace → accuracy)**: bandingkan antar-kolom (softmax vs arcface) di tabel di atas.',
+          f'**A_accuracy** (EER pose-kanonik terendah, kolom arcface) = **{a_star}**.',
+          f'**A_robust** (worst-case EER terendah pada rotasi θ>0, kolom arcface) = **{a_robust}**.',
+          '> ⚠️ A_accuracy bisa ≠ A_robust: alignment yang sempurna di pose-kanonik (mis. center/scale '
+          'atau PCA polos) dapat **runtuh saat dirotasi** (lihat rotation_sensitivity.png). Untuk '
+          '**deployment & klaim H1, pakai A_robust**.']
+    if sig_rows:
+        L += ['', '## Signifikansi softmax vs arcface (paired t-test, 5 seed, N5M5)', '',
+              '| alignment | EER sm | EER arc | Δ(sm−arc) | arcface lebih baik | p-value | sig<0.05 |',
+              '|---|---|---|---|---|---|---|']
+        for r in sig_rows:
+            L.append(f"| {r['alignment']} | {r['eer_softmax_mean']*100:.2f} | "
+                     f"{r['eer_arcface_mean']*100:.2f} | {r['mean_diff_sm_minus_arc']*100:+.2f} | "
+                     f"{'ya' if r['arcface_better'] else 'tidak'} | {r['p_value']:.3f} | "
+                     f"{'✔' if r['significant_p05'] else '—'} |")
+    L += ['', '## Klaim',
+          '- **H1 (normalisasi → robustness)**: lihat rotation_sensitivity.png + A_robust; alignment '
+          'rotation-robust (A4) datar di semua θ, sedangkan A0/A1/A2 runtuh & A3 paku di 90°.',
+          '- **H2 (ArcFace → accuracy)**: bandingkan antar-kolom (softmax vs arcface) + tabel signifikansi.',
           '', '_Dihasilkan otomatis oleh v8_lib.analyze()_']
     (ANA_DIR / 'SUMMARY.md').write_text('\n'.join(L))
     print('SUMMARY.md ditulis.')

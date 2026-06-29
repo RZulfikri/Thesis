@@ -184,8 +184,10 @@ abstraction + ball query) → struktur lokal multi-skala telapak; (3) permutatio
 - [x] t-SNE — **1 file PER config** (★ gallery / ● probe, warna per identitas)
 - [x] **Fusion N×M heatmap — 1 file PER config** (`fusion/<cfg>.png` + `fusion_nm.csv`) — bukti manfaat multi-frame
 - [x] **Tabel metrik lengkap** `metrics_full.csv` (EER/AUC/d′/rank-1/TAR@FAR/latency, mean±std) — bukan hanya EER
+- [x] **A_accuracy vs A_robust** dipisah (`A_STAR.txt` + SUMMARY): A_accuracy=EER pose-kanonik terendah,
+      A_robust=worst-case EER terendah pada rotasi θ>0 → **A_robust=A4** (pakai ini utk deployment/H1)
+- [x] **Uji signifikansi** berpasangan softmax vs arcface (paired t-test 5-seed) → `significance_softmax_vs_arcface.csv` + tabel di SUMMARY
 - [ ] (opsional) VRAM/disk per representasi (latency sudah ada di metrics_full)
-- [ ] (opsional) uji signifikansi berpasangan softmax vs arcface (per alignment; data 5-seed sudah ada)
 - [ ] (opsional) analisa kegagalan: identitas mana tertukar di A0/A3@90° (terlihat di confusion)
 
 ## 14. Multi-frame fusion (N×M) — KEPUTUSAN protokol (bukan temuan)
